@@ -1,0 +1,22 @@
+{
+    "name": "koperindo/driver-apk-backend",
+    "description": "Backend khusus driver-apk (Slim 4, tanpa ORM/migration -- lihat README.md & schema.sql)",
+    "type": "project",
+    "require": {
+        "php": "^8.1",
+        "slim/slim": "^4",
+        "slim/psr7": "^1",
+        "firebase/php-jwt": "^7.1",
+        "vlucas/phpdotenv": "^5"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        }
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    },
+    "minimum-stability": "stable"
+}

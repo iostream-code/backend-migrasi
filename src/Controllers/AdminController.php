@@ -1,0 +1,139 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Controllers;
+
+use App\Database;
+use App\Support\TripPresenter;
+use Psr\Http\Message\ResponseInterface as Response;
+use Psr\Http\Message\ServerRequestInterface as Request;
+
+class AdminController extends Controller
+{
+    /**
+     * GET /admin/drivers
+     * Daftar semua supir + posisi & status terakhir, dipakai untuk marker di peta.
+     * NB: {driver} pada endpoint ini adalah id dari driver_m_supir, bukan user_id shared_m_users.
+     */
+    public function drivers(Request $request, Response $response): Response
+    {
+        $pdo = Database::connection();
+
+        $stmt = $pdo->query(
+            'SELECT s.id, s.driver_status, s.last_lat, s.last_lng, s.last_ping_at, u.nama_lengkap
+             FROM driver_m_supir s
+             JOIN shared_m_users u ON u.user_id = s.user_id
+             ORDER BY u.nama_lengkap'
+        );
+        $drivers = $stmt->fetchAll();
+
+        $tripStmt = $pdo->prepare(
+            "SELECT * FROM driver_t_trip WHERE driver_id = :driver_id AND status = 'in_progress' ORDER BY id DESC LIMIT 1"
+        );
+
+        $result = array_map(function ($driver) use ($pdo, $tripStmt) {
+            $tripStmt->execute(['driver_id' => $driver['id']]);
+            $activeTrip = $tripStmt->fetch();
+
+            return [
+                'id' => (int) $driver['id'],
+                'name' => $driver['nama_lengkap'],
+                'status' => $driver['driver_status'],
+                'lat' => $driver['last_lat'] !== null ? (float) $driver['last_lat'] : null,
+                'lng' => $driver['last_lng'] !== null ? (float) $driver['last_lng'] : null,
+                'last_ping_at' => $driver['last_ping_at'],
+                'current_step_label' => $activeTrip
+                    ? TripPresenter::nextStepLabel(TripPresenter::completedSteps($pdo, (int) $activeTrip['id']))
+                    : null,
+            ];
+        }, $drivers);
+
+        return $this->json($response, $result);
+    }
+
+    /**
+     * GET /admin/drivers/{driver}
+     * Detail satu supir: info + riwayat trip lengkap dengan foto checkpoint.
+     */
+    public function driverDetail(Request $request, Response $response, array $args): Response
+    {
+        $pdo = Database::connection();
+        $driverId = (int) $args['driver'];
+
+        $stmt = $pdo->prepare(
+            'SELECT s.id, s.driver_status, u.nama_lengkap, u.hp
+             FROM driver_m_supir s
+             JOIN shared_m_users u ON u.user_id = s.user_id
+             WHERE s.id = :id LIMIT 1'
+        );
+        $stmt->execute(['id' => $driverId]);
+        $driver = $stmt->fetch();
+
+        if (!$driver) {
+            return $this->error($response, 'Supir tidak ditemukan.', 404);
+        }
+
+        $tripsStmt = $pdo->prepare('SELECT * FROM driver_t_trip WHERE driver_id = :driver_id ORDER BY id DESC');
+        $tripsStmt->execute(['driver_id' => $driverId]);
+        $trips = $tripsStmt->fetchAll();
+
+        $photosStmt = $pdo->prepare('SELECT type, path FROM driver_t_trip_photo WHERE trip_id = :trip_id');
+        $statusLabels = ['in_progress' => 'Sedang Berjalan', 'completed' => 'Selesai'];
+        $appUrl = rtrim($_ENV['APP_URL'], '/');
+
+        $trips = array_map(function ($trip) use ($photosStmt, $statusLabels, $appUrl) {
+            $photosStmt->execute(['trip_id' => $trip['id']]);
+            $photos = array_map(fn ($p) => [
+                'type' => $p['type'],
+                'url' => $appUrl . '/' . $p['path'],
+            ], $photosStmt->fetchAll());
+
+            return [
+                'id' => (int) $trip['id'],
+                'destination' => $trip['destination'],
+                'status_label' => $statusLabels[$trip['status']] ?? $trip['status'],
+                'created_at' => $trip['started_at'] ? date('d M Y H:i', strtotime($trip['started_at'])) : null,
+                'photos' => $photos,
+            ];
+        }, $trips);
+
+        return $this->json($response, [
+            'id' => (int) $driver['id'],
+            'name' => $driver['nama_lengkap'],
+            'phone' => $driver['hp'],
+            'status' => $driver['driver_status'],
+            'trips' => $trips,
+        ]);
+    }
+
+    /**
+     * POST /admin/drivers/{driver}/trip
+     * Admin menugaskan perjalanan baru ke supir tertentu. body: { destination }
+     */
+    public function createTrip(Request $request, Response $response, array $args): Response
+    {
+        $pdo = Database::connection();
+        $driverId = (int) $args['driver'];
+
+        $exists = $pdo->prepare('SELECT 1 FROM driver_m_supir WHERE id = :id LIMIT 1');
+        $exists->execute(['id' => $driverId]);
+        if (!$exists->fetchColumn()) {
+            return $this->error($response, 'Supir tidak ditemukan.', 404);
+        }
+
+        $body = (array) $request->getParsedBody();
+        $destination = isset($body['destination']) ? trim((string) $body['destination']) : null;
+
+        $insert = $pdo->prepare(
+            "INSERT INTO driver_t_trip (driver_id, destination, status, started_at) VALUES (:driver_id, :destination, 'in_progress', :now)"
+        );
+        $insert->execute(['driver_id' => $driverId, 'destination' => $destination ?: null, 'now' => date('Y-m-d H:i:s')]);
+
+        return $this->json($response, [
+            'id' => (int) $pdo->lastInsertId(),
+            'destination' => $destination,
+            'status' => 'in_progress',
+        ], 201);
+    }
+}
