@@ -74,11 +74,16 @@ php -S 127.0.0.1:8000 -t public                   # dev server
 ```
 
 Lalu **seed minimal 1 admin** — tanpa ini tidak ada seorang pun yang bisa login sebagai
-admin/dispatcher (`driver_m_admin_access` mulai kosong):
+admin/dispatcher (`driver_m_admin_access` mulai kosong). Edit dulu daftar `username` di
+[`seed_admin_access.sql`](seed_admin_access.sql), lalu:
 
-```sql
-INSERT INTO driver_m_admin_access (user_id) VALUES (<user_id asli dari shared_m_users>);
+```bash
+mysql -u <username> -p <database> < seed_admin_access.sql
 ```
+
+Cari berdasarkan `username` (bukan `user_id` mentah) supaya tidak perlu lihat-lihat ID manual,
+dan aman dijalankan berkali-kali (idempotent) kalau nanti mau nambah admin lagi. Query
+terakhir di skrip itu langsung menampilkan siapa saja yang berhasil ke-seed, untuk verifikasi.
 
 **Belum pernah dites terhadap MySQL beneran** — sandbox tempat project ini dibuat tidak punya
 ekstensi `pdo_mysql` terpasang. Sudah divalidasi lewat: `php -l` di semua file, dan smoke test
@@ -115,6 +120,7 @@ frontend, cuma implementasi & auth mechanism-nya yang beda (Bearer JWT, tetap ta
 ```
 driver-apk-backend/
 ├── schema.sql              # CREATE TABLE mentah -- jalankan manual, bukan migration
+├── seed_admin_access.sql    # seed whitelist admin/dispatcher (cari by username, idempotent)
 ├── public/
 │   ├── index.php             # front controller
 │   └── uploads/trips/{id}/   # foto checkpoint, disajikan langsung sbg file statis
