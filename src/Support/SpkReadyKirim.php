@@ -19,10 +19,11 @@ use PDO;
  * getSpkReadyKirim() di backend-production (endpoint itu sendiri TIDAK
  * dipanggil app manapun yang ter-checkout di workspace ini) -- versi di sini
  * disederhanakan (tanpa estimasi ukuran/berat, tidak perlu utk plotting
- * supir) dan filter tambahan: sudah py driver_t_trip ATAU driver_t_ekspedisi
- * dikecualikan juga (bukan cuma yang ada di t_pengiriman_detail, krn app ini
- * tidak pakai t_pengiriman sama sekali) -- satu SPK cuma boleh masuk salah
- * satu jalur (supir internal ATAU ekspedisi luar), tidak dua-duanya.
+ * supir) dan filter tambahan: sudah py driver_t_trip dikecualikan juga
+ * (bukan cuma yang ada di t_pengiriman_detail, krn app ini tidak pakai
+ * t_pengiriman sama sekali). driver_t_trip.driver_id bisa nunjuk ke supir
+ * internal MAUPUN eksternal (lihat driver_m_supir.tipe) -- satu tabel,
+ * satu pengecualian, tidak ada tabel terpisah lagi utk ekspedisi luar.
  */
 class SpkReadyKirim
 {
@@ -40,9 +41,6 @@ class SpkReadyKirim
                AND p.status_pengirman = 'belum_selesai'
                AND NOT EXISTS (
                    SELECT 1 FROM driver_t_trip t WHERE t.penjualan_id = p.penjualan_id
-               )
-               AND NOT EXISTS (
-                   SELECT 1 FROM driver_t_ekspedisi e WHERE e.penjualan_id = p.penjualan_id AND e.status != 'batal'
                )
              ORDER BY p.penjualan_tanggal_kirim ASC"
         );
