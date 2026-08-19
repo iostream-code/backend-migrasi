@@ -19,16 +19,6 @@ $app = AppFactory::create();
 // ditangani PSR-7 lewat getUploadedFiles(), tidak lewat sini).
 $app->addBodyParsingMiddleware();
 
-// CORS sederhana: izinkan semua origin, TANPA kredensial (auth pakai header
-// Authorization Bearer, bukan cookie -- jadi tidak butuh Allow-Credentials
-// ataupun whitelist origin eksplisit seperti backend-production).
-$app->add(function (Request $request, $handler): Response {
-    $response = $handler->handle($request);
-    return $response
-        ->withHeader('Access-Control-Allow-Origin', '*')
-        ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-        ->withHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept');
-});
 $app->options('/{routes:.*}', function (Request $request, Response $response) {
     return $response;
 });
@@ -48,6 +38,25 @@ $errorMiddleware->setDefaultErrorHandler(function (
     }
     $response->getBody()->write(json_encode($payload));
     return $response->withHeader('Content-Type', 'application/json');
+});
+
+// CORS sederhana: izinkan semua origin, TANPA kredensial (auth pakai header
+// Authorization Bearer, bukan cookie -- jadi tidak butuh Allow-Credentials
+// ataupun whitelist origin eksplisit seperti backend-production). SENGAJA
+// ditambahkan SETELAH addErrorMiddleware() -- middleware Slim jalan LIFO
+// (yang terakhir ditambahkan jadi PALING LUAR), jadi ini WAJIB paling
+// terakhir supaya CORS membungkus error middleware juga. Kalau kebalik
+// (seperti sebelumnya, CORS ditambah duluan), respons error (500/exception
+// tak tertangkap dari route manapun) lolos tanpa header CORS sama sekali --
+// browser laporannya jadi "blocked by CORS policy", padahal error aslinya
+// beda (mis. tabel belum ada krn migration belum dijalankan) dan pesan
+// aslinya jadi tersembunyi.
+$app->add(function (Request $request, $handler): Response {
+    $response = $handler->handle($request);
+    return $response
+        ->withHeader('Access-Control-Allow-Origin', '*')
+        ->withHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+        ->withHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Accept');
 });
 
 $auth = new AuthController();
