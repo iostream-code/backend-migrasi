@@ -96,17 +96,22 @@ $app->group('', function ($group) use ($auth, $driver, $admin, $suratJalan) {
         $adminGroup->post('/admin/drivers', [$admin, 'createDriver']);
         $adminGroup->get('/admin/drivers/{driver}', [$admin, 'driverDetail']);
         $adminGroup->post('/admin/drivers/{driver}/trip', [$admin, 'createTrip']);
+        $adminGroup->post('/admin/trips/{trip}/complete', [$admin, 'completeTripManual']);
         $adminGroup->get('/admin/surat-jalan/{no}', [$admin, 'lookupSuratJalan']);
         $adminGroup->get('/admin/spk-ready-kirim', [$admin, 'spkReadyKirim']);
+        $adminGroup->get('/admin/spk-belum-sj', [$admin, 'spkBelumSj']);
         $adminGroup->get('/admin/ekspedisi', [$admin, 'listEkspedisi']);
         $adminGroup->post('/admin/trips/{trip}/pengajuan-biaya', [$admin, 'createPengajuanBiaya']);
         $adminGroup->get('/admin/trips/{trip}/pengajuan-biaya', [$admin, 'listPengajuanBiaya']);
 
         // --- Modul surat jalan MILIK app ini (ekspedisi_t_surat_jalan) ---
+        $adminGroup->get('/admin/sj/spk/{penjualan_id}/items', [$suratJalan, 'spkItems']);
         $adminGroup->get('/admin/sj', [$suratJalan, 'index']);
         $adminGroup->post('/admin/sj', [$suratJalan, 'store']);
         $adminGroup->get('/admin/sj/{id}', [$suratJalan, 'show']);
         $adminGroup->put('/admin/sj/{id}', [$suratJalan, 'update']);
+        $adminGroup->post('/admin/sj/{id}/photo', [$suratJalan, 'uploadPhoto']);
+        $adminGroup->post('/admin/sj/{id}/validasi', [$suratJalan, 'validasi']);
     })->add(new AdminOnlyMiddleware());
 })->add(new AuthMiddleware());
 

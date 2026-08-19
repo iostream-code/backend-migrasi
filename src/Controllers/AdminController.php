@@ -200,6 +200,47 @@ class AdminController extends Controller
     }
 
     /**
+     * POST /admin/trips/{trip}/complete
+     * Admin menandai perjalanan SELESAI secara manual -- SATU-SATUNYA cara
+     * menyelesaikan trip supir EKSTERNAL (tidak punya akun, tidak bisa
+     * checkpoint foto lewat /driver/trip/{trip}/photo & /complete seperti
+     * supir internal). Sengaja ditolak kalau supirnya internal -- supir
+     * internal tetap WAJIB checkpoint foto lewat app, admin tidak boleh
+     * membypass itu dari sisi sini.
+     */
+    public function completeTripManual(Request $request, Response $response, array $args): Response
+    {
+        $pdo = Database::connection();
+        $tripId = (int) $args['trip'];
+
+        $stmt = $pdo->prepare(
+            'SELECT t.*, s.tipe AS driver_tipe FROM ekspedisi_t_trip t
+             JOIN ekspedisi_m_supir s ON s.id = t.driver_id
+             WHERE t.id = :id LIMIT 1'
+        );
+        $stmt->execute(['id' => $tripId]);
+        $trip = $stmt->fetch();
+
+        if (!$trip) {
+            return $this->error($response, 'Perjalanan tidak ditemukan.', 404);
+        }
+        if ($trip['driver_tipe'] !== 'eksternal') {
+            return $this->error($response, 'Supir internal wajib menyelesaikan checkpoint foto lewat app, tidak bisa ditandai selesai manual dari admin.', 422);
+        }
+        if ($trip['status'] === 'completed') {
+            return $this->error($response, 'Perjalanan ini sudah selesai.', 422);
+        }
+
+        $update = $pdo->prepare(
+            "UPDATE ekspedisi_t_trip SET status = 'completed', completed_at = :now WHERE id = :id"
+        );
+        $update->execute(['now' => date('Y-m-d H:i:s'), 'id' => $tripId]);
+
+        $trip['status'] = 'completed';
+        return $this->json($response, TripPresenter::format($pdo, $trip));
+    }
+
+    /**
      * GET /admin/spk-ready-kirim
      * Daftar SPK yang sudah disetujui (shipment_status='approved') tapi belum
      * selesai dikirim & belum diplot ke supir manapun -- READ-ONLY ke
@@ -208,6 +249,18 @@ class AdminController extends Controller
     public function spkReadyKirim(Request $request, Response $response): Response
     {
         return $this->json($response, SpkReadyKirim::list(Database::connection()));
+    }
+
+    /**
+     * GET /admin/spk-belum-sj
+     * Daftar SPK ready-kirim yang BELUM ADA SJ sama sekali (beda kriteria
+     * dari spkReadyKirim() di atas, yang "belum diplot ke supir") -- dipakai
+     * tab "SPK" (landing page admin) di ekspedisi-apk. Lihat
+     * App\Support\SpkReadyKirim::listBelumSj().
+     */
+    public function spkBelumSj(Request $request, Response $response): Response
+    {
+        return $this->json($response, SpkReadyKirim::listBelumSj(Database::connection()));
     }
 
     /**

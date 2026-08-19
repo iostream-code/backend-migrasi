@@ -29,10 +29,11 @@ class SuratJalan
             $params['penjualan_id'] = $filters['penjualan_id'];
         }
 
-        $sql = "SELECT sj.*, COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama_supir
+        $sql = "SELECT sj.*, COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama_supir, v.nama_lengkap AS nama_validator
                 FROM ekspedisi_t_surat_jalan sj
                 LEFT JOIN ekspedisi_m_supir s ON s.id = sj.driver_id
-                LEFT JOIN shared_m_users u ON u.user_id = s.user_id";
+                LEFT JOIN shared_m_users u ON u.user_id = s.user_id
+                LEFT JOIN shared_m_users v ON v.user_id = sj.divalidasi_oleh";
         if ($where) {
             $sql .= ' WHERE ' . implode(' AND ', $where);
         }
@@ -40,23 +41,33 @@ class SuratJalan
 
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
+        $rows = $stmt->fetchAll();
 
-        return $stmt->fetchAll();
+        foreach ($rows as &$row) {
+            $row['items'] = self::items($pdo, (int) $row['id']);
+        }
+
+        return $rows;
     }
 
     public static function find(PDO $pdo, int $id): ?array
     {
         $stmt = $pdo->prepare(
-            'SELECT sj.*, COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama_supir
+            'SELECT sj.*, COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama_supir, v.nama_lengkap AS nama_validator
              FROM ekspedisi_t_surat_jalan sj
              LEFT JOIN ekspedisi_m_supir s ON s.id = sj.driver_id
              LEFT JOIN shared_m_users u ON u.user_id = s.user_id
+             LEFT JOIN shared_m_users v ON v.user_id = sj.divalidasi_oleh
              WHERE sj.id = :id LIMIT 1'
         );
         $stmt->execute(['id' => $id]);
         $row = $stmt->fetch();
+        if (!$row) {
+            return null;
+        }
+        $row['items'] = self::items($pdo, $id);
 
-        return $row ?: null;
+        return $row;
     }
 
     public static function findByTrip(PDO $pdo, int $tripId): ?array
@@ -69,16 +80,40 @@ class SuratJalan
     }
 
     /**
+     * Breakdown per-lini produk dari 1 SJ (ekspedisi_t_surat_jalan_item),
+     * di-JOIN ke t_penjualan_detail_performa (READ-ONLY, backend-production)
+     * cuma buat label produk (penjualan_jenis) -- dipanggil find() supaya GET
+     * /admin/sj/{id} sekalian bawa breakdown-nya, tidak perlu request kedua.
+     */
+    public static function items(PDO $pdo, int $suratJalanId): array
+    {
+        $stmt = $pdo->prepare(
+            'SELECT i.id, i.penjualan_detail_performa_id, i.jumlah_kirim, pdp.penjualan_jenis
+             FROM ekspedisi_t_surat_jalan_item i
+             LEFT JOIN t_penjualan_detail_performa pdp ON pdp.penjualan_detail_performa_id = i.penjualan_detail_performa_id
+             WHERE i.surat_jalan_id = :surat_jalan_id
+             ORDER BY i.id'
+        );
+        $stmt->execute(['surat_jalan_id' => $suratJalanId]);
+
+        return $stmt->fetchAll();
+    }
+
+    /**
      * Dipanggil admin lewat POST /admin/sj -- bikin SJ manual, trip_id
-     * boleh NULL (tidak terkait trip manapun).
+     * boleh NULL (tidak terkait trip manapun). $data['items'] opsional --
+     * array [{penjualan_detail_performa_id, jumlah_kirim}, ...] kalau SJ ini
+     * melekat ke lini produk SPK tertentu (lihat
+     * SuratJalanController::store(), yang sudah validasi sisa qty-nya lebih
+     * dulu lewat App\Support\PenjualanItemLookup sebelum sampai sini).
      */
     public static function create(PDO $pdo, array $data): int
     {
         $insert = $pdo->prepare(
             'INSERT INTO ekspedisi_t_surat_jalan
-                (trip_id, penjualan_id, driver_id, tujuan, kendaraan, plat, jumlah_kirim, catatan, created_by)
+                (trip_id, penjualan_id, driver_id, tujuan, kendaraan, plat, pengirim, jumlah_kirim, tgl_kirim, catatan, created_by)
              VALUES
-                (:trip_id, :penjualan_id, :driver_id, :tujuan, :kendaraan, :plat, :jumlah_kirim, :catatan, :created_by)'
+                (:trip_id, :penjualan_id, :driver_id, :tujuan, :kendaraan, :plat, :pengirim, :jumlah_kirim, :tgl_kirim, :catatan, :created_by)'
         );
         $insert->execute([
             'trip_id' => $data['trip_id'] ?? null,
@@ -87,11 +122,27 @@ class SuratJalan
             'tujuan' => $data['tujuan'] ?? null,
             'kendaraan' => $data['kendaraan'] ?? null,
             'plat' => $data['plat'] ?? null,
+            'pengirim' => $data['pengirim'] ?? null,
             'jumlah_kirim' => $data['jumlah_kirim'] ?? null,
+            'tgl_kirim' => $data['tgl_kirim'] ?? null,
             'catatan' => $data['catatan'] ?? null,
             'created_by' => $data['created_by'] ?? null,
         ]);
         $id = (int) $pdo->lastInsertId();
+
+        if (!empty($data['items'])) {
+            $itemInsert = $pdo->prepare(
+                'INSERT INTO ekspedisi_t_surat_jalan_item (surat_jalan_id, penjualan_detail_performa_id, jumlah_kirim)
+                 VALUES (:surat_jalan_id, :penjualan_detail_performa_id, :jumlah_kirim)'
+            );
+            foreach ($data['items'] as $item) {
+                $itemInsert->execute([
+                    'surat_jalan_id' => $id,
+                    'penjualan_detail_performa_id' => $item['penjualan_detail_performa_id'],
+                    'jumlah_kirim' => $item['jumlah_kirim'],
+                ]);
+            }
+        }
 
         self::assignNomor($pdo, $id);
 
@@ -100,7 +151,7 @@ class SuratJalan
 
     public static function update(PDO $pdo, int $id, array $data): void
     {
-        $fields = ['tujuan', 'kendaraan', 'plat', 'jumlah_kirim', 'catatan'];
+        $fields = ['tujuan', 'kendaraan', 'plat', 'pengirim', 'jumlah_kirim', 'tgl_kirim', 'catatan'];
         $set = [];
         $params = ['id' => $id];
         foreach ($fields as $field) {
@@ -118,6 +169,43 @@ class SuratJalan
     }
 
     /**
+     * Dipanggil SuratJalanController::uploadPhoto() -- admin melampirkan foto
+     * ke SJ yang dibuat manual (trip_id NULL, jadi tidak pernah lewat jalur
+     * upsertFromTripPhoto()). Sama seperti checkpoint foto supir: begitu foto
+     * terisi, status naik ke 'terkirim' -- KECUALI SJ ini sudah 'tervalidasi',
+     * status akhir itu tidak boleh turun lagi cuma gara-gara ada foto baru.
+     */
+    public static function attachPhoto(PDO $pdo, int $id, string $photoPath): void
+    {
+        $pdo->prepare(
+            "UPDATE ekspedisi_t_surat_jalan SET foto_surat_jalan = :path,
+                status = IF(status = 'tervalidasi', status, 'terkirim') WHERE id = :id"
+        )->execute(['path' => $photoPath, 'id' => $id]);
+    }
+
+    /**
+     * Dipanggil SuratJalanController::validasi() -- ADMIN mengupload foto SJ
+     * fisik final (sudah ditandatangani penerima, dibawa balik supir) sekaligus
+     * menandai pengiriman ini tervalidasi. Beda dari attachPhoto()/
+     * upsertFromTripPhoto() yang isi foto_surat_jalan (bukti lapangan) --
+     * ini isi foto_validasi (bukti closing), status jadi 'tervalidasi', dan
+     * dicatat siapa & kapan.
+     */
+    public static function validate(PDO $pdo, int $id, string $photoPath, int $userId): void
+    {
+        $pdo->prepare(
+            "UPDATE ekspedisi_t_surat_jalan
+             SET foto_validasi = :path, status = 'tervalidasi', divalidasi_oleh = :user_id, divalidasi_at = :now
+             WHERE id = :id"
+        )->execute([
+            'path' => $photoPath,
+            'user_id' => $userId,
+            'now' => date('Y-m-d H:i:s'),
+            'id' => $id,
+        ]);
+    }
+
+    /**
      * Dipanggil DriverController::uploadPhoto() saat type=sj -- upsert (by
      * trip_id) supaya re-upload checkpoint yang sama menimpa baris lama,
      * bukan bikin baris baru. driver_id/penjualan_id/tujuan diisi otomatis
@@ -129,7 +217,8 @@ class SuratJalan
         $existing = self::findByTrip($pdo, (int) $trip['id']);
         if ($existing) {
             $pdo->prepare(
-                "UPDATE ekspedisi_t_surat_jalan SET foto_surat_jalan = :path, status = 'terkirim' WHERE id = :id"
+                "UPDATE ekspedisi_t_surat_jalan SET foto_surat_jalan = :path,
+                    status = IF(status = 'tervalidasi', status, 'terkirim') WHERE id = :id"
             )->execute(['path' => $photoPath, 'id' => $existing['id']]);
 
             return (int) $existing['id'];
