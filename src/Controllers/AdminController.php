@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Database;
+use App\Support\SpkReadyKirim;
 use App\Support\SupirProfile;
 use App\Support\SuratJalanLookup;
 use App\Support\TripPresenter;
@@ -135,6 +136,7 @@ class AdminController extends Controller
                 'id' => (int) $trip['id'],
                 'destination' => $trip['destination'],
                 'no_surat_jalan' => $trip['no_surat_jalan'] ?? null,
+                'penjualan_id' => $trip['penjualan_id'] ?? null,
                 'status_label' => $statusLabels[$trip['status']] ?? $trip['status'],
                 'created_at' => $trip['started_at'] ? date('d M Y H:i', strtotime($trip['started_at'])) : null,
                 'photos' => $photos,
@@ -148,6 +150,17 @@ class AdminController extends Controller
             'status' => $driver['driver_status'],
             'trips' => $trips,
         ]);
+    }
+
+    /**
+     * GET /admin/spk-ready-kirim
+     * Daftar SPK yang sudah disetujui (shipment_status='approved') tapi belum
+     * selesai dikirim & belum diplot ke supir manapun -- READ-ONLY ke
+     * t_penjualan_header (backend-production). Lihat App\Support\SpkReadyKirim.
+     */
+    public function spkReadyKirim(Request $request, Response $response): Response
+    {
+        return $this->json($response, SpkReadyKirim::list(Database::connection()));
     }
 
     /**
@@ -171,12 +184,15 @@ class AdminController extends Controller
     /**
      * POST /admin/drivers/{driver}/trip
      * Admin menugaskan perjalanan baru ke supir tertentu.
-     * body: { destination, no_surat_jalan? }
+     * body: { destination, no_surat_jalan?, penjualan_id? }
      *
-     * no_surat_jalan (opsional) ditautkan LOGIS ke surat_jalan.no_surat_jalan
-     * (tabel lama milik backend-production) -- kalau diisi, WAJIB cocok dengan
-     * SJ yang benar-benar ada (dicegah typo), tapi tidak pernah menulis balik
-     * ke tabel surat_jalan itu sendiri.
+     * no_surat_jalan & penjualan_id (keduanya opsional) ditautkan LOGIS ke
+     * surat_jalan.no_surat_jalan / t_penjualan_header.penjualan_id (tabel lama
+     * milik backend-production) -- kalau diisi, WAJIB cocok dengan baris yang
+     * benar-benar ada (dicegah typo), tapi tidak pernah menulis balik ke tabel
+     * itu sendiri. penjualan_id dipakai buat plotting dari SPK ready-kirim
+     * (lihat spkReadyKirim()) SEBELUM surat_jalan-nya ada; no_surat_jalan
+     * biasanya ditautkan belakangan setelah SJ fisik dibuat.
      */
     public function createTrip(Request $request, Response $response, array $args): Response
     {
@@ -192,19 +208,24 @@ class AdminController extends Controller
         $body = (array) $request->getParsedBody();
         $destination = isset($body['destination']) ? trim((string) $body['destination']) : null;
         $noSuratJalan = isset($body['no_surat_jalan']) ? trim((string) $body['no_surat_jalan']) : null;
+        $penjualanId = isset($body['penjualan_id']) ? trim((string) $body['penjualan_id']) : null;
 
         if ($noSuratJalan !== null && $noSuratJalan !== '' && !SuratJalanLookup::find($pdo, $noSuratJalan)) {
             return $this->error($response, 'Nomor Surat Jalan tidak ditemukan, cek lagi penulisannya.');
         }
+        if ($penjualanId !== null && $penjualanId !== '' && !SpkReadyKirim::find($pdo, $penjualanId)) {
+            return $this->error($response, 'SPK/penjualan_id tidak ditemukan, cek lagi penulisannya.');
+        }
 
         $insert = $pdo->prepare(
-            "INSERT INTO driver_t_trip (driver_id, destination, no_surat_jalan, status, started_at)
-             VALUES (:driver_id, :destination, :no_surat_jalan, 'in_progress', :now)"
+            "INSERT INTO driver_t_trip (driver_id, destination, no_surat_jalan, penjualan_id, status, started_at)
+             VALUES (:driver_id, :destination, :no_surat_jalan, :penjualan_id, 'in_progress', :now)"
         );
         $insert->execute([
             'driver_id' => $driverId,
             'destination' => $destination ?: null,
             'no_surat_jalan' => $noSuratJalan ?: null,
+            'penjualan_id' => $penjualanId ?: null,
             'now' => date('Y-m-d H:i:s'),
         ]);
 
@@ -212,6 +233,7 @@ class AdminController extends Controller
             'id' => (int) $pdo->lastInsertId(),
             'destination' => $destination,
             'no_surat_jalan' => $noSuratJalan ?: null,
+            'penjualan_id' => $penjualanId ?: null,
             'status' => 'in_progress',
         ], 201);
     }

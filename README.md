@@ -121,13 +121,16 @@ frontend, cuma implementasi & auth mechanism-nya yang beda (Bearer JWT, tetap ta
 | GET | `/admin/drivers` | token + admin | `[{ id, name, status, lat, lng, current_step_label }]` |
 | POST | `/admin/drivers` | token + admin | `{ username }` → `{ id, name, status }`, 201. Cari akun di `shared_m_users` lewat `username`, buat/pastikan profil `driver_m_supir`-nya ada (idempotent — kalau sudah py profil, yang lama dikembalikan apa adanya) |
 | GET | `/admin/drivers/{driver}` | token + admin | `{ id, name, phone, status, trips: [...] }` |
-| POST | `/admin/drivers/{driver}/trip` | token + admin | `{ destination, no_surat_jalan? }` — `no_surat_jalan` opsional, kalau diisi WAJIB cocok SJ asli (lihat bagian Integrasi di bawah) |
+| POST | `/admin/drivers/{driver}/trip` | token + admin | `{ destination, no_surat_jalan?, penjualan_id? }` — keduanya opsional, kalau diisi WAJIB cocok baris asli (lihat bagian Integrasi di bawah) |
 | GET | `/admin/surat-jalan/{no}` | token + admin | Cek 1 nomor SJ asli (READ-ONLY ke `surat_jalan` milik `backend-production`) → `{ no_surat_jalan, tanggal, kendaraan, plat, pengirim, valid_cs, penjualan_id, client_nama, client_alamat }`, 404 kalau tidak ketemu |
+| GET | `/admin/spk-ready-kirim` | token + admin | Daftar SPK yang sudah disetujui utk dikirim tapi belum diplot ke supir manapun (READ-ONLY ke `t_penjualan_header`) → `[{ penjualan_id, no_spk, client_nama, kota_asal, kota_tujuan, penjualan_tanggal_kirim, tgl_cs_deadline, penjualan_total_qty }]` |
 
 `{driver}`/`{trip}` di URL adalah **id `driver_m_supir`/`driver_t_trip`** (bukan `user_id`
 `shared_m_users`).
 
-## Integrasi dengan `surat_jalan` (backend-production)
+## Integrasi dengan `backend-production`
+
+### `surat_jalan`
 
 `driver_t_trip` punya kolom opsional **`no_surat_jalan`**, tautan LOGIS (bukan FK asli) ke
 `surat_jalan.no_surat_jalan` — tabel lama milik `backend-production` (`latin1`, ~6.255 baris,
@@ -161,6 +164,43 @@ Kalau nanti mau dilanjutkan (auto-fill, atau tombol "Validasi CS" di app ini yan
 `update-valid-notif-kirim` di `backend-production` via HTTP client — BUKAN nulis langsung ke
 `surat_jalan`), itu keputusan terpisah, di luar scope perubahan `driver_*` yang sudah dikerjakan.
 
+### SPK ready-kirim (`t_penjualan_header`)
+
+`driver_t_trip` juga punya kolom opsional **`penjualan_id`**, tautan LOGIS ke
+`t_penjualan_header.penjualan_id` — dipakai buat menautkan trip ke SPK **sebelum** SJ fisiknya
+ada (beda dari `no_surat_jalan` yang baru relevan **setelah** SJ dibuat). Alur aslinya, ditelusuri
+dari kode `backend-production`:
+
+1. Order dibuat, CS isi `penjualan_tanggal_kirim` (tanggal kirim yang diminta customer).
+2. Saat alamat kirim disimpan (`ServiceController::updateAlamatKirim()`), sistem cek status
+   pembayaran: **belum lunas** → `shipment_status = 'requested'` (kirim notifikasi Firebase,
+   minta approval — **ini titik "admin mengajukan ke finance"** yang disebut). **Sudah lunas**
+   → langsung `shipment_status = 'approved'`, tanpa approval.
+3. `ServiceController::approveShipment()` (endpoint terpisah, approve/reject) memindahkan
+   `requested` → `approved`/`rejected`.
+4. Order dengan `shipment_status = 'approved'` DAN `status_pengirman = 'belum_selesai'` siap
+   diplot ke supir — ini yang ditampilkan `GET /admin/spk-ready-kirim`.
+
+**Sudah dites & LIVE dengan data asli** (2026-08-19): dari database produksi, ada 2.005 order
+`pending`, 8 `requested` (menunggu approval), 7 `approved` — 3 di antaranya `approved` +
+`belum_selesai` (siap kirim sungguhan, bukan data test).
+
+Ada juga endpoint `Ekspedisi\EkspedisiController::getSpkReadyKirim()` di `backend-production`
+dengan query serupa (plus sistem rekomendasi ekspedisi luar berbasis skor harga/kecepatan/
+histori ketepatan waktu: `getRekomendasiEkspedisi`, `setEkspedisiPenjualan`, tabel
+`m_expedisi`/`m_expedisi_tarif`/`t_pengiriman`) — **tapi tidak dipanggil app manapun di
+workspace ini, dan tabelnya kosong/cuma data test di database live.** Sengaja **tidak**
+diintegrasikan ke sini — `App\Support\SpkReadyKirim` di project ini query sendiri (versi
+sederhana, dikecualikan berdasar `driver_t_trip.penjualan_id`, bukan `t_pengiriman_detail`)
+supaya tidak bergantung pada sistem ekspedisi luar yang belum pernah hidup. Kalau nanti mau
+sekalian pakai jalur ekspedisi luar, itu scope terpisah — lihat histori git utk detail
+pertimbangannya.
+
+Yang sudah ada di sisi driver-apk: halaman **"SPK Siap Kirim"** (`adminSpkKirim.js`) — daftar
+SPK ready-kirim, admin pilih supir dari dropdown per baris, klik "Plot" langsung bikin
+`driver_t_trip` tertaut ke `penjualan_id` itu (destination di-compose otomatis dari
+`client_nama` + `kota_tujuan`).
+
 ## Struktur
 
 ```
@@ -169,7 +209,8 @@ driver-apk-backend/
 │   ├── 01_schema.sql            # CREATE TABLE 5 tabel driver_* -- bukan migration, sekali jalan
 │   ├── 02_seed_admin_access.sql  # seed whitelist admin/dispatcher (cari by username, idempotent)
 │   ├── 03_seed_dummy_drivers.sql # pre-provision profil supir dummy (cari by username, idempotent)
-│   └── 04_alter_add_no_surat_jalan_to_driver_t_trip.sql  # ALTER: tambah driver_t_trip.no_surat_jalan
+│   ├── 04_alter_add_no_surat_jalan_to_driver_t_trip.sql  # ALTER: tambah driver_t_trip.no_surat_jalan
+│   └── 05_add_penjualan_id_to_driver_t_trip.sql          # ALTER: tambah driver_t_trip.penjualan_id
 ├── public/
 │   ├── index.php             # front controller
 │   └── uploads/trips/{id}/   # foto checkpoint, disajikan langsung sbg file statis
@@ -180,7 +221,8 @@ driver-apk-backend/
     │   ├── Jwt.php               # terbitkan & verifikasi token HS256
     │   ├── SupirProfile.php       # ambil/buat baris driver_m_supir (dipakai Auth & DriverController)
     │   ├── TripPresenter.php      # format baris driver_t_trip -> shape JSON, konstanta STEPS
-    │   └── SuratJalanLookup.php   # query READ-ONLY ke surat_jalan (integrasi, lihat bagian di atas)
+    │   ├── SuratJalanLookup.php   # query READ-ONLY ke surat_jalan (integrasi, lihat bagian di atas)
+    │   └── SpkReadyKirim.php      # query READ-ONLY ke t_penjualan_header (integrasi SPK ready-kirim)
     ├── Middleware/
     │   ├── AuthMiddleware.php      # cek Authorization: Bearer <token>, taruh user_id/role di request
     │   └── AdminOnlyMiddleware.php  # tolak 403 kalau role token bukan 'admin'
