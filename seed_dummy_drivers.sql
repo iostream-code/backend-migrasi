@@ -19,8 +19,9 @@
 INSERT INTO driver_m_supir (user_id, driver_status)
 SELECT user_id, 'offline' FROM shared_m_users
 WHERE username IN (
-    'ganti_username_supir_1'
-    -- , 'ganti_username_supir_2'
+    'TstItai',
+    'TstArya',
+    'TstCrysna'
 )
 -- Nama tabel WAJIB di-qualify di sini (pelajaran dari seed_admin_access.sql) --
 -- tanpa itu `user_id` ambigu (ada di driver_m_supir maupun di shared_m_users

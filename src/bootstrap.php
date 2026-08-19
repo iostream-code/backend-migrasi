@@ -94,6 +94,7 @@ $app->group('', function ($group) use ($auth, $driver, $admin) {
         $adminGroup->post('/admin/drivers', [$admin, 'createDriver']);
         $adminGroup->get('/admin/drivers/{driver}', [$admin, 'driverDetail']);
         $adminGroup->post('/admin/drivers/{driver}/trip', [$admin, 'createTrip']);
+        $adminGroup->get('/admin/surat-jalan/{no}', [$admin, 'lookupSuratJalan']);
     })->add(new AdminOnlyMiddleware());
 })->add(new AuthMiddleware());
 

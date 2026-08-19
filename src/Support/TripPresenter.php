@@ -45,6 +45,7 @@ class TripPresenter
         return [
             'id' => (int) $trip['id'],
             'destination' => $trip['destination'],
+            'no_surat_jalan' => $trip['no_surat_jalan'] ?? null,
             'status' => $trip['status'],
             'completed_steps' => $completed,
             'current_step_label' => self::nextStepLabel($completed),

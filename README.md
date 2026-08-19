@@ -113,10 +113,45 @@ frontend, cuma implementasi & auth mechanism-nya yang beda (Bearer JWT, tetap ta
 | GET | `/admin/drivers` | token + admin | `[{ id, name, status, lat, lng, current_step_label }]` |
 | POST | `/admin/drivers` | token + admin | `{ username }` → `{ id, name, status }`, 201. Cari akun di `shared_m_users` lewat `username`, buat/pastikan profil `driver_m_supir`-nya ada (idempotent — kalau sudah py profil, yang lama dikembalikan apa adanya) |
 | GET | `/admin/drivers/{driver}` | token + admin | `{ id, name, phone, status, trips: [...] }` |
-| POST | `/admin/drivers/{driver}/trip` | token + admin | `{ destination }` |
+| POST | `/admin/drivers/{driver}/trip` | token + admin | `{ destination, no_surat_jalan? }` — `no_surat_jalan` opsional, kalau diisi WAJIB cocok SJ asli (lihat bagian Integrasi di bawah) |
+| GET | `/admin/surat-jalan/{no}` | token + admin | Cek 1 nomor SJ asli (READ-ONLY ke `surat_jalan` milik `backend-production`) → `{ no_surat_jalan, tanggal, kendaraan, plat, pengirim, valid_cs, penjualan_id, client_nama, client_alamat }`, 404 kalau tidak ketemu |
 
 `{driver}`/`{trip}` di URL adalah **id `driver_m_supir`/`driver_t_trip`** (bukan `user_id`
 `shared_m_users`).
+
+## Integrasi dengan `surat_jalan` (backend-production)
+
+`driver_t_trip` punya kolom opsional **`no_surat_jalan`**, tautan LOGIS (bukan FK asli) ke
+`surat_jalan.no_surat_jalan` — tabel lama milik `backend-production` (`latin1`, ~6.255 baris,
+dipakai `surat-jalan-apk`/`produksi-apk`/`finance-apk`). Bukan FK asli karena
+`no_surat_jalan` **bukan kolom unik** di `surat_jalan` — 1 nomor SJ = banyak baris (1 baris
+per item produk dalam pengiriman itu).
+
+Yang sudah ada:
+- `App\Support\SuratJalanLookup` — query **READ-ONLY** (`surat_jalan` JOIN
+  `t_penjualan_detail_performa` JOIN `t_penjualan_header` LEFT JOIN `m_client`) buat validasi
+  & preview info SJ (nama client, kendaraan, plat, pengirim). Tidak pernah menulis ke tabel
+  manapun di luar `driver_*`.
+- `POST /admin/drivers/{driver}/trip` menolak (422) kalau `no_surat_jalan` diisi tapi tidak
+  cocok SJ manapun — mencegah typo bikin tautan basi.
+- `GET /admin/surat-jalan/{no}` — dipakai tombol "Cek" di form "Perjalanan Baru" (`driver-apk`)
+  buat preview sebelum submit.
+
+**Yang SENGAJA belum dikerjakan** (di luar cakupan tabel `driver_*`, butuh keputusan/otorisasi
+terpisah sebelum disentuh):
+- **Belum ada auto-fill/auto-create.** Trip TIDAK otomatis mengisi `destination`/`kendaraan`
+  dari SJ yang ditautkan, dan checkpoint foto "sj" milik supir TIDAK otomatis mengisi
+  `surat_jalan.foto_surat_jalan`. Keduanya berdiri sendiri, cuma ditautkan lewat nomor.
+- **Alur validasi CS (`valid_cs`) tidak tersentuh.** Ada endpoint di `backend-production`
+  yang men-set `valid_cs=1` (`POST /update-valid-notif-kirim`, `CsController::updateValidNotifKirim`
+  — sekaligus men-trigger webhook finalisasi Point/komisi), TAPI setelah ditelusuri ke semua
+  app frontend di workspace ini, **tidak ada satu pun yang memanggilnya** — `finance-apk`
+  cuma menampilkan `valid_cs` read-only. Belum jelas mekanisme validasi CS yang sebenarnya
+  dipakai sekarang. Perlu klarifikasi user sebelum ada tindakan lanjut di sisi ini.
+
+Kalau nanti mau dilanjutkan (auto-fill, atau tombol "Validasi CS" di app ini yang manggil
+`update-valid-notif-kirim` di `backend-production` via HTTP client — BUKAN nulis langsung ke
+`surat_jalan`), itu keputusan terpisah, di luar scope perubahan `driver_*` yang sudah dikerjakan.
 
 ## Struktur
 
@@ -125,6 +160,7 @@ driver-apk-backend/
 ├── schema.sql              # CREATE TABLE mentah -- jalankan manual, bukan migration
 ├── seed_admin_access.sql    # seed whitelist admin/dispatcher (cari by username, idempotent)
 ├── seed_dummy_drivers.sql    # pre-provision profil supir dummy (cari by username, idempotent)
+├── alter_add_no_surat_jalan_to_driver_t_trip.sql  # ALTER satu-kali, cuma perlu kalau schema.sql sudah pernah dijalankan sebelum kolom ini ada
 ├── public/
 │   ├── index.php             # front controller
 │   └── uploads/trips/{id}/   # foto checkpoint, disajikan langsung sbg file statis
@@ -134,7 +170,8 @@ driver-apk-backend/
     ├── Support/
     │   ├── Jwt.php               # terbitkan & verifikasi token HS256
     │   ├── SupirProfile.php       # ambil/buat baris driver_m_supir (dipakai Auth & DriverController)
-    │   └── TripPresenter.php      # format baris driver_t_trip -> shape JSON, konstanta STEPS
+    │   ├── TripPresenter.php      # format baris driver_t_trip -> shape JSON, konstanta STEPS
+    │   └── SuratJalanLookup.php   # query READ-ONLY ke surat_jalan (integrasi, lihat bagian di atas)
     ├── Middleware/
     │   ├── AuthMiddleware.php      # cek Authorization: Bearer <token>, taruh user_id/role di request
     │   └── AdminOnlyMiddleware.php  # tolak 403 kalau role token bukan 'admin'

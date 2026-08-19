@@ -6,6 +6,7 @@ namespace App\Controllers;
 
 use App\Database;
 use App\Support\SupirProfile;
+use App\Support\SuratJalanLookup;
 use App\Support\TripPresenter;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -133,6 +134,7 @@ class AdminController extends Controller
             return [
                 'id' => (int) $trip['id'],
                 'destination' => $trip['destination'],
+                'no_surat_jalan' => $trip['no_surat_jalan'] ?? null,
                 'status_label' => $statusLabels[$trip['status']] ?? $trip['status'],
                 'created_at' => $trip['started_at'] ? date('d M Y H:i', strtotime($trip['started_at'])) : null,
                 'photos' => $photos,
@@ -149,8 +151,32 @@ class AdminController extends Controller
     }
 
     /**
+     * GET /admin/surat-jalan/{no}
+     * Cek nomor SJ asli (tabel surat_jalan milik backend-production, READ-ONLY)
+     * sebelum ditautkan ke trip -- dipakai frontend buat preview/validasi di
+     * form "Perjalanan Baru" sebelum submit.
+     */
+    public function lookupSuratJalan(Request $request, Response $response, array $args): Response
+    {
+        $pdo = Database::connection();
+        $found = SuratJalanLookup::find($pdo, (string) $args['no']);
+
+        if (!$found) {
+            return $this->error($response, 'Nomor Surat Jalan tidak ditemukan.', 404);
+        }
+
+        return $this->json($response, $found);
+    }
+
+    /**
      * POST /admin/drivers/{driver}/trip
-     * Admin menugaskan perjalanan baru ke supir tertentu. body: { destination }
+     * Admin menugaskan perjalanan baru ke supir tertentu.
+     * body: { destination, no_surat_jalan? }
+     *
+     * no_surat_jalan (opsional) ditautkan LOGIS ke surat_jalan.no_surat_jalan
+     * (tabel lama milik backend-production) -- kalau diisi, WAJIB cocok dengan
+     * SJ yang benar-benar ada (dicegah typo), tapi tidak pernah menulis balik
+     * ke tabel surat_jalan itu sendiri.
      */
     public function createTrip(Request $request, Response $response, array $args): Response
     {
@@ -165,15 +191,27 @@ class AdminController extends Controller
 
         $body = (array) $request->getParsedBody();
         $destination = isset($body['destination']) ? trim((string) $body['destination']) : null;
+        $noSuratJalan = isset($body['no_surat_jalan']) ? trim((string) $body['no_surat_jalan']) : null;
+
+        if ($noSuratJalan !== null && $noSuratJalan !== '' && !SuratJalanLookup::find($pdo, $noSuratJalan)) {
+            return $this->error($response, 'Nomor Surat Jalan tidak ditemukan, cek lagi penulisannya.');
+        }
 
         $insert = $pdo->prepare(
-            "INSERT INTO driver_t_trip (driver_id, destination, status, started_at) VALUES (:driver_id, :destination, 'in_progress', :now)"
+            "INSERT INTO driver_t_trip (driver_id, destination, no_surat_jalan, status, started_at)
+             VALUES (:driver_id, :destination, :no_surat_jalan, 'in_progress', :now)"
         );
-        $insert->execute(['driver_id' => $driverId, 'destination' => $destination ?: null, 'now' => date('Y-m-d H:i:s')]);
+        $insert->execute([
+            'driver_id' => $driverId,
+            'destination' => $destination ?: null,
+            'no_surat_jalan' => $noSuratJalan ?: null,
+            'now' => date('Y-m-d H:i:s'),
+        ]);
 
         return $this->json($response, [
             'id' => (int) $pdo->lastInsertId(),
             'destination' => $destination,
+            'no_surat_jalan' => $noSuratJalan ?: null,
             'status' => 'in_progress',
         ], 201);
     }
