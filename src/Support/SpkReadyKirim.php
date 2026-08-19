@@ -64,10 +64,19 @@ class SpkReadyKirim
     }
 
     /**
-     * Belum ada SJ sama sekali (ekspedisi_t_surat_jalan.penjualan_id) --
-     * begitu 1 SJ (bahkan sebagian) dibuat utk SPK ini, hilang dari daftar
-     * ini (sisa qty per lini produk yang belum terkirim tetap kelihatan lewat
-     * "Cek SPK" di form Buat Surat Jalan -- lihat App\Support\PenjualanItemLookup).
+     * Belum ada SJ sama sekali -- dicek dari DUA jalur (2026-08-20: 1 SJ
+     * sekarang boleh berisi lini produk dari BEBERAPA SPK sekaligus, jadi
+     * `ekspedisi_t_surat_jalan.penjualan_id` header SENDIRIAN tidak lagi cukup
+     * buat tahu SPK mana saja yang sudah tersentuh):
+     * 1. `ekspedisi_t_surat_jalan.penjualan_id` -- jalur lama/trip-linked
+     *    (upsertFromTripPhoto(), selalu 1 SPK per trip).
+     * 2. `ekspedisi_t_surat_jalan_item` JOIN `t_penjualan_detail_performa` --
+     *    jalur manual dgn breakdown per produk (SuratJalanController::store()),
+     *    penjualan_id-nya cuma ada di level lini produk, bukan di header SJ.
+     * Begitu SPK ini tersentuh SALAH SATU dari dua jalur itu (bahkan
+     * sebagian), hilang dari daftar ini (sisa qty per lini produk yang belum
+     * terkirim tetap kelihatan lewat "Cek SPK" di form Buat Surat Jalan --
+     * lihat App\Support\PenjualanItemLookup).
      */
     public static function listBelumSj(PDO $pdo): array
     {
@@ -81,6 +90,11 @@ class SpkReadyKirim
              WHERE " . self::BASE_WHERE . "
                AND NOT EXISTS (
                    SELECT 1 FROM ekspedisi_t_surat_jalan sj WHERE sj.penjualan_id = p.penjualan_id
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM ekspedisi_t_surat_jalan_item sji
+                   JOIN t_penjualan_detail_performa pdp ON pdp.penjualan_detail_performa_id = sji.penjualan_detail_performa_id
+                   WHERE pdp.penjualan_id = p.penjualan_id
                )
              ORDER BY p.penjualan_tanggal_kirim ASC"
         );

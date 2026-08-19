@@ -65,18 +65,21 @@ class SuratJalanController extends Controller
     /**
      * POST /admin/sj
      * Bikin SJ manual dari layar admin -- trip_id opsional (boleh tidak
-     * terkait trip manapun).
-     * body: { trip_id?, penjualan_id?, driver_id?, tujuan?, kendaraan?, plat?, pengirim?, jumlah_kirim?, tgl_kirim?, catatan?, items?: [{penjualan_detail_performa_id, jumlah_kirim}, ...] }
+     * terkait trip manapun), TAPI driver_id WAJIB (supir bukan lagi opsional,
+     * lihat komentar validasi di bawah).
+     * body: { trip_id?, driver_id (wajib), tujuan?, kendaraan?, plat?, penerima?, jumlah_kirim?, tgl_kirim?, catatan?, items?: [{penjualan_detail_performa_id, jumlah_kirim}, ...] }
      *
-     * `items` OPSIONAL -- diisi kalau SJ ini melekat ke lini produk SPK
-     * tertentu (realitas di lapangan: SJ SELALU begini, lihat
-     * App\Support\PenjualanItemLookup & "Alur validasi" di README). Kalau
-     * diisi, `jumlah_kirim` header DIHITUNG OTOMATIS dari total item (bukan
-     * dari body['jumlah_kirim']) -- dan tiap item divalidasi ULANG di sini
-     * terhadap sisa qty TERKINI (bukan percaya angka yang dikirim client,
-     * yang bisa basi kalau ada SJ lain masuk di antara admin buka form &
-     * submit). Kalau `items` kosong, tetap boleh bikin SJ freeform tanpa SPK
-     * (mis. sampel/transfer internal) -- `jumlah_kirim` manual dari body.
+     * `items` OPSIONAL, dan BOLEH berisi lini produk dari BEBERAPA SPK
+     * BERBEDA sekaligus (2026-08-20 -- realitas di lapangan: 1 SJ fisik bisa
+     * sekali jalan angkut pesanan dari lebih dari 1 SPK). Makanya validasi di
+     * sini per-ITEM, bukan per-SPK lagi -- setiap
+     * `penjualan_detail_performa_id` dicek satu-satu lewat
+     * PenjualanItemLookup::findLine() (bukan percaya `sisa` yang dikirim
+     * client, bisa basi kalau ada SJ lain masuk di antara admin buka form &
+     * submit), SPK-nya sendiri baru ketahuan dari situ (tidak perlu dikirim
+     * terpisah lagi lewat body['penjualan_id']). Kalau `items` kosong, tetap
+     * boleh bikin SJ freeform tanpa SPK sama sekali (mis. sampel/transfer
+     * internal) -- `jumlah_kirim` manual dari body.
      */
     public function store(Request $request, Response $response): Response
     {
@@ -90,62 +93,54 @@ class SuratJalanController extends Controller
                 return $this->error($response, 'Trip tidak ditemukan.');
             }
         }
-        if (!empty($body['driver_id'])) {
-            $exists = $pdo->prepare('SELECT 1 FROM ekspedisi_m_supir WHERE id = :id LIMIT 1');
-            $exists->execute(['id' => (int) $body['driver_id']]);
-            if (!$exists->fetchColumn()) {
-                return $this->error($response, 'Supir tidak ditemukan.');
-            }
+
+        // Supir WAJIB (2026-08-20) -- dulu opsional ("SJ boleh dibuat dulu,
+        // supirnya belakangan"), tapi itu bikin ambigu siapa yang bawa
+        // dokumen fisiknya. Kalau nanti supirnya memang belum ada (mis. SPK
+        // baru diplot belakangan), buat SJ-nya belakangan juga setelah ada
+        // supir -- bukan buat SJ tanpa supir lalu susulan.
+        if (empty($body['driver_id'])) {
+            return $this->error($response, 'Supir wajib dipilih.');
+        }
+        $exists = $pdo->prepare('SELECT 1 FROM ekspedisi_m_supir WHERE id = :id LIMIT 1');
+        $exists->execute(['id' => (int) $body['driver_id']]);
+        if (!$exists->fetchColumn()) {
+            return $this->error($response, 'Supir tidak ditemukan.');
         }
 
-        $penjualanId = !empty($body['penjualan_id']) ? trim((string) $body['penjualan_id']) : null;
         $items = [];
         $jumlahKirim = !empty($body['jumlah_kirim']) ? (int) $body['jumlah_kirim'] : null;
 
-        if ($penjualanId !== null) {
-            $exists = $pdo->prepare('SELECT 1 FROM t_penjualan_header WHERE penjualan_id = :id LIMIT 1');
-            $exists->execute(['id' => $penjualanId]);
-            if (!$exists->fetchColumn()) {
-                return $this->error($response, 'SPK/penjualan_id tidak ditemukan, cek lagi penulisannya.');
+        if (!empty($body['items']) && is_array($body['items'])) {
+            foreach ($body['items'] as $raw) {
+                $lineId = (int) ($raw['penjualan_detail_performa_id'] ?? 0);
+                $qty = (int) ($raw['jumlah_kirim'] ?? 0);
+                if ($qty <= 0) {
+                    continue;
+                }
+                $line = PenjualanItemLookup::findLine($pdo, $lineId);
+                if ($line === null) {
+                    return $this->error($response, "Item produk #{$lineId} tidak ditemukan.");
+                }
+                if ($qty > $line['sisa']) {
+                    return $this->error($response, "Jumlah kirim {$line['penjualan_jenis']} ({$qty}) melebihi sisa yang belum terkirim ({$line['sisa']}).");
+                }
+                $items[] = ['penjualan_detail_performa_id' => $lineId, 'jumlah_kirim' => $qty];
             }
 
-            if (!empty($body['items']) && is_array($body['items'])) {
-                $sisaById = [];
-                foreach (PenjualanItemLookup::lines($pdo, $penjualanId) as $line) {
-                    $sisaById[$line['penjualan_detail_performa_id']] = $line;
-                }
-
-                foreach ($body['items'] as $raw) {
-                    $lineId = (int) ($raw['penjualan_detail_performa_id'] ?? 0);
-                    $qty = (int) ($raw['jumlah_kirim'] ?? 0);
-                    if ($qty <= 0) {
-                        continue;
-                    }
-                    if (!isset($sisaById[$lineId])) {
-                        return $this->error($response, "Item produk #{$lineId} bukan bagian dari SPK {$penjualanId}.");
-                    }
-                    if ($qty > $sisaById[$lineId]['sisa']) {
-                        $jenis = $sisaById[$lineId]['penjualan_jenis'] ?? "#{$lineId}";
-                        return $this->error($response, "Jumlah kirim {$jenis} ({$qty}) melebihi sisa yang belum terkirim ({$sisaById[$lineId]['sisa']}).");
-                    }
-                    $items[] = ['penjualan_detail_performa_id' => $lineId, 'jumlah_kirim' => $qty];
-                }
-
-                if (empty($items)) {
-                    return $this->error($response, 'Isi jumlah kirim minimal untuk 1 item produk.');
-                }
-                $jumlahKirim = array_sum(array_column($items, 'jumlah_kirim'));
+            if (empty($items)) {
+                return $this->error($response, 'Isi jumlah kirim minimal untuk 1 item produk.');
             }
+            $jumlahKirim = array_sum(array_column($items, 'jumlah_kirim'));
         }
 
         $id = SuratJalan::create($pdo, [
             'trip_id' => !empty($body['trip_id']) ? (int) $body['trip_id'] : null,
-            'penjualan_id' => $penjualanId,
-            'driver_id' => !empty($body['driver_id']) ? (int) $body['driver_id'] : null,
+            'driver_id' => (int) $body['driver_id'],
             'tujuan' => $body['tujuan'] ?? null,
             'kendaraan' => $body['kendaraan'] ?? null,
             'plat' => $body['plat'] ?? null,
-            'pengirim' => $body['pengirim'] ?? null,
+            'penerima' => $body['penerima'] ?? null,
             'jumlah_kirim' => $jumlahKirim,
             'tgl_kirim' => !empty($body['tgl_kirim']) ? $body['tgl_kirim'] : null,
             'catatan' => $body['catatan'] ?? null,
@@ -217,7 +212,7 @@ class SuratJalanController extends Controller
      * PUT /admin/sj/{id}
      * Lengkapi/koreksi field SJ (mis. yang auto-dibuat dari checkpoint foto
      * supir, biasanya minim data -- admin isi kendaraan/plat/jumlah_kirim belakangan).
-     * body: { tujuan?, kendaraan?, plat?, pengirim?, jumlah_kirim?, tgl_kirim?, catatan? }
+     * body: { tujuan?, kendaraan?, plat?, penerima?, jumlah_kirim?, tgl_kirim?, catatan? }
      */
     public function update(Request $request, Response $response, array $args): Response
     {

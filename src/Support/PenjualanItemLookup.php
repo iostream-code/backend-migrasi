@@ -20,10 +20,7 @@ use PDO;
  */
 class PenjualanItemLookup
 {
-    public static function lines(PDO $pdo, string $penjualanId): array
-    {
-        $stmt = $pdo->prepare(
-            "SELECT pdp.penjualan_detail_performa_id, pdp.penjualan_jenis, pdp.penjualan_qty,
+    private const BASE_SELECT = "SELECT pdp.penjualan_detail_performa_id, pdp.penjualan_id, pdp.penjualan_jenis, pdp.penjualan_qty,
                     COALESCE(legacy.total, 0) AS terkirim_legacy,
                     COALESCE(eks.total, 0) AS terkirim_ekspedisi
              FROM t_penjualan_detail_performa pdp
@@ -34,22 +31,46 @@ class PenjualanItemLookup
              LEFT JOIN (
                  SELECT penjualan_detail_performa_id, SUM(jumlah_kirim) AS total
                  FROM ekspedisi_t_surat_jalan_item GROUP BY penjualan_detail_performa_id
-             ) eks ON eks.penjualan_detail_performa_id = pdp.penjualan_detail_performa_id
-             WHERE pdp.penjualan_id = :penjualan_id
-             ORDER BY pdp.penjualan_detail_performa_id"
-        );
+             ) eks ON eks.penjualan_detail_performa_id = pdp.penjualan_detail_performa_id";
+
+    /**
+     * Semua lini produk dalam 1 SPK -- dipakai frontend begitu admin "Cek"
+     * nomor SPK di form Buat Surat Jalan.
+     */
+    public static function lines(PDO $pdo, string $penjualanId): array
+    {
+        $stmt = $pdo->prepare(self::BASE_SELECT . ' WHERE pdp.penjualan_id = :penjualan_id ORDER BY pdp.penjualan_detail_performa_id');
         $stmt->execute(['penjualan_id' => $penjualanId]);
 
-        return array_map(static function (array $row): array {
-            $terkirim = (int) $row['terkirim_legacy'] + (int) $row['terkirim_ekspedisi'];
+        return array_map([self::class, 'format'], $stmt->fetchAll());
+    }
 
-            return [
-                'penjualan_detail_performa_id' => (int) $row['penjualan_detail_performa_id'],
-                'penjualan_jenis' => $row['penjualan_jenis'],
-                'penjualan_qty' => (int) $row['penjualan_qty'],
-                'terkirim' => $terkirim,
-                'sisa' => max(0, (int) $row['penjualan_qty'] - $terkirim),
-            ];
-        }, $stmt->fetchAll());
+    /**
+     * Satu lini produk by id, TERLEPAS dari SPK mana asalnya -- dipakai
+     * SuratJalanController::store() buat validasi ULANG tiap item saat
+     * submit (1 SJ sekarang boleh berisi lini produk dari beberapa SPK
+     * sekaligus, jadi validasi per-item, bukan per-SPK lagi seperti dulu).
+     */
+    public static function findLine(PDO $pdo, int $penjualanDetailPerformaId): ?array
+    {
+        $stmt = $pdo->prepare(self::BASE_SELECT . ' WHERE pdp.penjualan_detail_performa_id = :id LIMIT 1');
+        $stmt->execute(['id' => $penjualanDetailPerformaId]);
+        $row = $stmt->fetch();
+
+        return $row ? self::format($row) : null;
+    }
+
+    private static function format(array $row): array
+    {
+        $terkirim = (int) $row['terkirim_legacy'] + (int) $row['terkirim_ekspedisi'];
+
+        return [
+            'penjualan_detail_performa_id' => (int) $row['penjualan_detail_performa_id'],
+            'penjualan_id' => $row['penjualan_id'],
+            'penjualan_jenis' => $row['penjualan_jenis'],
+            'penjualan_qty' => (int) $row['penjualan_qty'],
+            'terkirim' => $terkirim,
+            'sisa' => max(0, (int) $row['penjualan_qty'] - $terkirim),
+        ];
     }
 }

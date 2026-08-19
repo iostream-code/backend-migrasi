@@ -82,13 +82,18 @@ class SuratJalan
     /**
      * Breakdown per-lini produk dari 1 SJ (ekspedisi_t_surat_jalan_item),
      * di-JOIN ke t_penjualan_detail_performa (READ-ONLY, backend-production)
-     * cuma buat label produk (penjualan_jenis) -- dipanggil find() supaya GET
-     * /admin/sj/{id} sekalian bawa breakdown-nya, tidak perlu request kedua.
+     * buat label produk (penjualan_jenis) DAN penjualan_id lini itu --
+     * dipanggil find()/list() supaya GET /admin/sj sekalian bawa breakdown-nya.
+     * penjualan_id per-item ini yang jadi sumber kebenaran "SJ ini menyentuh
+     * SPK apa saja" (2026-08-20: 1 SJ boleh berisi lini produk dari BEBERAPA
+     * SPK sekaligus -- kolom header ekspedisi_t_surat_jalan.penjualan_id
+     * TIDAK CUKUP lagi buat itu, cuma dipakai jalur trip-linked lama yang
+     * selalu 1 SPK per trip).
      */
     public static function items(PDO $pdo, int $suratJalanId): array
     {
         $stmt = $pdo->prepare(
-            'SELECT i.id, i.penjualan_detail_performa_id, i.jumlah_kirim, pdp.penjualan_jenis
+            'SELECT i.id, i.penjualan_detail_performa_id, i.jumlah_kirim, pdp.penjualan_jenis, pdp.penjualan_id
              FROM ekspedisi_t_surat_jalan_item i
              LEFT JOIN t_penjualan_detail_performa pdp ON pdp.penjualan_detail_performa_id = i.penjualan_detail_performa_id
              WHERE i.surat_jalan_id = :surat_jalan_id
@@ -102,18 +107,20 @@ class SuratJalan
     /**
      * Dipanggil admin lewat POST /admin/sj -- bikin SJ manual, trip_id
      * boleh NULL (tidak terkait trip manapun). $data['items'] opsional --
-     * array [{penjualan_detail_performa_id, jumlah_kirim}, ...] kalau SJ ini
-     * melekat ke lini produk SPK tertentu (lihat
-     * SuratJalanController::store(), yang sudah validasi sisa qty-nya lebih
-     * dulu lewat App\Support\PenjualanItemLookup sebelum sampai sini).
+     * array [{penjualan_detail_performa_id, jumlah_kirim}, ...], BOLEH berisi
+     * lini produk dari beberapa SPK berbeda sekaligus (lihat
+     * SuratJalanController::store(), yang sudah validasi sisa qty tiap item
+     * SATU-SATU lewat App\Support\PenjualanItemLookup::findLine() sebelum
+     * sampai sini -- makanya $data['penjualan_id'] SENGAJA tidak ada lagi di
+     * sini, SPK-nya cuma bisa diketahui per-item lewat items()).
      */
     public static function create(PDO $pdo, array $data): int
     {
         $insert = $pdo->prepare(
             'INSERT INTO ekspedisi_t_surat_jalan
-                (trip_id, penjualan_id, driver_id, tujuan, kendaraan, plat, pengirim, jumlah_kirim, tgl_kirim, catatan, created_by)
+                (trip_id, penjualan_id, driver_id, tujuan, kendaraan, plat, penerima, jumlah_kirim, tgl_kirim, catatan, created_by)
              VALUES
-                (:trip_id, :penjualan_id, :driver_id, :tujuan, :kendaraan, :plat, :pengirim, :jumlah_kirim, :tgl_kirim, :catatan, :created_by)'
+                (:trip_id, :penjualan_id, :driver_id, :tujuan, :kendaraan, :plat, :penerima, :jumlah_kirim, :tgl_kirim, :catatan, :created_by)'
         );
         $insert->execute([
             'trip_id' => $data['trip_id'] ?? null,
@@ -122,7 +129,7 @@ class SuratJalan
             'tujuan' => $data['tujuan'] ?? null,
             'kendaraan' => $data['kendaraan'] ?? null,
             'plat' => $data['plat'] ?? null,
-            'pengirim' => $data['pengirim'] ?? null,
+            'penerima' => $data['penerima'] ?? null,
             'jumlah_kirim' => $data['jumlah_kirim'] ?? null,
             'tgl_kirim' => $data['tgl_kirim'] ?? null,
             'catatan' => $data['catatan'] ?? null,
@@ -151,7 +158,7 @@ class SuratJalan
 
     public static function update(PDO $pdo, int $id, array $data): void
     {
-        $fields = ['tujuan', 'kendaraan', 'plat', 'pengirim', 'jumlah_kirim', 'tgl_kirim', 'catatan'];
+        $fields = ['tujuan', 'kendaraan', 'plat', 'penerima', 'jumlah_kirim', 'tgl_kirim', 'catatan'];
         $set = [];
         $params = ['id' => $id];
         foreach ($fields as $field) {

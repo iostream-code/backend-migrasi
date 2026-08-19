@@ -143,10 +143,10 @@ frontend, cuma implementasi & auth mechanism-nya yang beda (Bearer JWT, tetap ta
 | POST | `/admin/trips/{trip}/pengajuan-biaya` | token + admin | `{ nominal_diajukan, keterangan? }` → 201. `nominal_diajukan` input manual admin. Berlaku utk trip supir internal maupun eksternal |
 | GET | `/admin/trips/{trip}/pengajuan-biaya` | token + admin | Riwayat pengajuan biaya utk 1 trip → `[{ id, trip_id, nominal_diajukan, status, nominal_disetujui, catatan_finance, ... }]` |
 | GET | `/admin/sj/spk/{penjualan_id}/items` | token + admin | Lini produk 1 SPK + sisa qty yang belum terkirim (READ-ONLY, lihat `App\Support\PenjualanItemLookup`) → `[{ penjualan_detail_performa_id, penjualan_jenis, penjualan_qty, terkirim, sisa }]`, 404 kalau SPK tidak ditemukan |
-| GET | `/admin/sj` | token + admin | Daftar surat jalan **milik app ini sendiri** (`ekspedisi_t_surat_jalan`, independen dari `surat_jalan` lama) — query opsional `?status=`/`?penjualan_id=` → `[{ id, no_surat_jalan, trip_id, penjualan_id, driver_id, nama_supir, tujuan, kendaraan, plat, jumlah_kirim, items: [{ penjualan_detail_performa_id, penjualan_jenis, jumlah_kirim }], foto_surat_jalan, status, ... }]` |
-| POST | `/admin/sj` | token + admin | `{ trip_id?, penjualan_id?, driver_id?, tujuan?, kendaraan?, plat?, pengirim?, jumlah_kirim?, tgl_kirim?, catatan?, items?: [{ penjualan_detail_performa_id, jumlah_kirim }] }` → 201. Bikin SJ manual, tidak harus terkait trip. Kalau `items` diisi, `jumlah_kirim` dihitung otomatis dari total item & tiap item divalidasi ulang ke sisa qty terkini (422 kalau melebihi) |
+| GET | `/admin/sj` | token + admin | Daftar surat jalan **milik app ini sendiri** (`ekspedisi_t_surat_jalan`, independen dari `surat_jalan` lama) — query opsional `?status=`/`?penjualan_id=` → `[{ id, no_surat_jalan, trip_id, penjualan_id, driver_id, nama_supir, tujuan, kendaraan, plat, penerima, jumlah_kirim, items: [{ penjualan_detail_performa_id, penjualan_id, penjualan_jenis, jumlah_kirim }], foto_surat_jalan, status, ... }]` — `penjualan_id` di level item beda-beda kalau SJ ini lintas SPK, header `penjualan_id` cuma keisi jalur trip-linked lama |
+| POST | `/admin/sj` | token + admin | `{ trip_id?, driver_id (WAJIB), tujuan?, kendaraan?, plat?, penerima?, jumlah_kirim?, tgl_kirim?, catatan?, items?: [{ penjualan_detail_performa_id, jumlah_kirim }] }` → 201, 422 kalau `driver_id` kosong. Bikin SJ manual, tidak harus terkait trip. `items` BOLEH berisi lini produk dari beberapa SPK berbeda sekaligus (tidak ada `penjualan_id` di body lagi — SPK-nya diketahui per-item). Kalau `items` diisi, `jumlah_kirim` dihitung otomatis dari total item & tiap item divalidasi ulang satu-satu ke sisa qty terkini (422 kalau melebihi) |
 | GET | `/admin/sj/{id}` | token + admin | Detail 1 SJ |
-| PUT | `/admin/sj/{id}` | token + admin | `{ tujuan?, kendaraan?, plat?, pengirim?, jumlah_kirim?, tgl_kirim?, catatan? }` — lengkapi/koreksi field (foto TIDAK lewat sini, lihat endpoint di bawah) |
+| PUT | `/admin/sj/{id}` | token + admin | `{ tujuan?, kendaraan?, plat?, penerima?, jumlah_kirim?, tgl_kirim?, catatan? }` — lengkapi/koreksi field (foto TIDAK lewat sini, lihat endpoint di bawah) |
 | POST | `/admin/sj/{id}/photo` | token + admin | multipart: `photo`. Lampirkan/ganti foto SJ manual (SJ dari checkpoint supir sudah otomatis punya foto) — begitu terisi, `status` naik ke `terkirim` |
 | POST | `/admin/sj/{id}/validasi` | token + admin | multipart: `photo`. Langkah PENUTUP alur SJ — admin upload foto SJ fisik final yang sudah ditandatangani penerima (dibawa balik supir), isi `foto_validasi` + `status` jadi `tervalidasi` + catat `divalidasi_oleh`/`divalidasi_at`. 422 kalau SJ ini sudah tervalidasi |
 
@@ -236,12 +236,18 @@ dropdown per baris (internal & eksternal sekaligus), klik "Plot" langsung bikin 
 tertaut ke `penjualan_id` itu (destination di-compose otomatis dari `client_nama` + `kota_tujuan`).
 
 **Varian kedua (2026-08-20): tab "SPK" — halaman awal admin.** Kriteria "siap tapi belum X" di
-sini beda: **belum ada `ekspedisi_t_surat_jalan`** sama sekali (`SpkReadyKirim::listBelumSj()`,
-`GET /admin/spk-belum-sj`), bukan belum diplot. Dua hal independen — 1 SPK bisa sudah diplot ke
-supir (hilang dari "Plot SPK ke Supir") tapi SJ-nya belum dibuat (masih muncul di tab "SPK"), atau
-sebaliknya. Aksi per baris di tab ini cuma **"Buat SJ"** (navigasi ke `adminNewSuratJalan.js`
-dengan `penjualan_id` dititip lewat `prefill.js`) — plotting supir tetap di tab Ekspedisi, dua
-concern sengaja dipisah.
+sini beda: **belum ada SJ sama sekali** (`SpkReadyKirim::listBelumSj()`, `GET /admin/spk-belum-sj`),
+bukan belum diplot. Dua hal independen — 1 SPK bisa sudah diplot ke supir (hilang dari "Plot SPK
+ke Supir") tapi SJ-nya belum dibuat (masih muncul di tab "SPK"), atau sebaliknya. Aksi per baris
+di tab ini cuma **"Surat Jalan"** (navigasi ke `adminNewSuratJalan.js` dengan `penjualan_id`
+dititip lewat `prefill.js`, jadi grup SPK pertama otomatis) — plotting supir tetap di tab
+Ekspedisi, dua concern sengaja dipisah.
+
+Sejak 1 SJ boleh lintas SPK (lihat "Breakdown per lini produk SPK" di bawah), `listBelumSj()`
+cek **DUA jalur** buat "sudah ada SJ" — header `ekspedisi_t_surat_jalan.penjualan_id` (trip-linked
+lama) ATAU `ekspedisi_t_surat_jalan_item` JOIN `t_penjualan_detail_performa` (manual, breakdown
+per produk). Kalau cuma cek header saja, SPK yang SJ-nya tercatat lewat item (bukan header) akan
+salah muncul lagi sebagai "belum ada SJ" padahal sudah ada.
 
 ### Supir eksternal / pihak ketiga (`ekspedisi_m_supir.tipe = 'eksternal'`)
 
@@ -303,9 +309,10 @@ lama (lihat keputusan di bagian atas). Dua jalur pengisian:
    diisi otomatis dari data trip, `status` langsung `terkirim`. Supir tidak perlu tahu/lihat
    modul SJ ini sama sekali — murni efek samping otomatis dari alur checkpoint yang sudah ada.
 2. **Manual dari admin.** `POST /admin/sj` (`SuratJalanController::store()`) — admin bikin SJ
-   langsung tanpa trip (`trip_id` NULL), isi semua field sendiri, foto opsional lewat
-   `POST /admin/sj/{id}/photo` setelah SJ-nya dibuat. `status` mulai dari `draft`
-   (belum ada foto) sampai `foto_surat_jalan` terisi.
+   langsung tanpa trip (`trip_id` NULL), `driver_id` **WAJIB** (2026-08-20, dulu opsional — lihat
+   catatan di bawah), field lain isi sendiri, foto opsional lewat `POST /admin/sj/{id}/photo`
+   setelah SJ-nya dibuat. `status` mulai dari `draft` (belum ada foto) sampai `foto_surat_jalan`
+   terisi.
 
 `no_surat_jalan` **auto-generated** setelah insert (format `SJ-YYYYMMDD-xxxx`, `xxxx` = id
 dipadding 4 digit) — `App\Support\SuratJalan::assignNomor()`, dipanggil dari `create()` maupun
@@ -332,6 +339,16 @@ awal ("sengaja tidak diikuti, beda skema beda tujuan") **dibatalkan** setelah di
 realitas di lapangan memang selalu begini. Lihat detail lengkap di bagian "Breakdown per lini
 produk SPK" di bawah.
 
+**Revisi lagi (2026-08-20, hari yang sama): dua koreksi lanjutan** setelah breakdown per lini
+produk jalan & dipakai:
+- **`pengirim` di-RENAME jadi `penerima`** (`database/08_rename_pengirim_ke_penerima.sql`) —
+  ternyata tumpang tindih konsep sama `driver_id`/supir yang sudah ada (SJ selalu punya supir,
+  jadi "siapa yang mengirim" sudah terjawab lewat itu). Field yang justru berguna: nama
+  penerima/PIC di tujuan, supaya supir tahu siapa yang harus dihubungi/diserahi barang.
+- **`driver_id` jadi WAJIB** di `POST /admin/sj` (dulu opsional, "SJ boleh dibuat dulu, supirnya
+  belakangan") — kolom DB-nya sendiri tetap nullable (tidak ada migration NOT NULL, supaya tidak
+  berisiko ke baris lama/jalur lain), validasi wajibnya cuma di level `SuratJalanController::store()`.
+
 FK ke `ekspedisi_t_trip`/`ekspedisi_m_supir` **FK asli** (tabel sendiri). `penjualan_id` tautan
 LOGIS ke `t_penjualan_header.penjualan_id` (backend-production), pola sama seperti
 `ekspedisi_t_trip.penjualan_id`.
@@ -347,28 +364,46 @@ per lini) — lebih match ke bentuk dokumen aslinya (1 SJ bisa antar beberapa pr
 & gampang ditampilkan sebagai 1 kartu di UI, `SuratJalan::items()` di-attach otomatis ke tiap
 baris `list()`/`find()`.
 
-**`App\Support\PenjualanItemLookup`** (READ-ONLY, baru) — hitung sisa qty per lini produk 1 SPK.
-Krusial: sisa dihitung dari **DUA sumber sekaligus** — `surat_jalan` (tabel LAMA milik
-backend-production, masih dipakai `surat-jalan-apk` dkk) **dan** `ekspedisi_t_surat_jalan_item`
-(tabel baru app ini) — supaya SPK yang sama, kalau kebetulan pernah/sedang dikirim lewat KEDUA
-app, tidak dobel-hitung sisa qty-nya dan menyebabkan over-shipment. Endpoint
-`GET /admin/sj/spk/{penjualan_id}/items` mengekspos ini ke frontend (dipakai tombol "Cek" di
-form "Buat Surat Jalan").
+**`App\Support\PenjualanItemLookup`** (READ-ONLY, baru) — dua method:
+- `lines($pdo, $penjualanId)` — semua lini produk 1 SPK + sisa qty, dipakai
+  `GET /admin/sj/spk/{penjualan_id}/items` (frontend tombol "Tambah" di form "Buat Surat Jalan").
+- `findLine($pdo, $penjualanDetailPerformaId)` — 1 lini produk by id, TERLEPAS dari SPK mana
+  asalnya, dipakai `SuratJalanController::store()` buat validasi ulang tiap item saat submit
+  (lihat di bawah).
 
-**`SuratJalanController::store()` validasi ULANG di server** — tidak percaya angka `sisa` yang
-dikirim client (bisa basi kalau ada SJ lain masuk di antara admin buka form & submit): query
-`PenjualanItemLookup::lines()` lagi saat submit, tolak 422 kalau `jumlah_kirim` item manapun
-melebihi sisa TERKINI, atau kalau `penjualan_detail_performa_id`-nya bukan bagian dari SPK itu.
-Kalau `items` diisi, `jumlah_kirim` di header **dihitung otomatis** dari total item (bukan dari
-input manual) — field "Jumlah kirim" flat di form disembunyikan begitu SPK ketemu & ada lini
-produknya.
+Krusial di keduanya: sisa dihitung dari **DUA sumber sekaligus** — `surat_jalan` (tabel LAMA
+milik backend-production, masih dipakai `surat-jalan-apk` dkk) **dan**
+`ekspedisi_t_surat_jalan_item` (tabel baru app ini) — supaya SPK yang sama, kalau kebetulan
+pernah/sedang dikirim lewat KEDUA app, tidak dobel-hitung sisa qty-nya dan menyebabkan
+over-shipment.
+
+**Revisi (2026-08-20): 1 SJ boleh berisi lini produk dari LEBIH DARI 1 SPK sekaligus** (realitas
+di lapangan: 1 truk/1 dokumen SJ fisik bisa sekali jalan angkut pesanan gabungan beberapa SPK).
+Konsekuensinya:
+- `SuratJalanController::store()` validasi **PER-ITEM**, bukan per-SPK lagi — tiap
+  `penjualan_detail_performa_id` di `items[]` dicek satu-satu lewat `PenjualanItemLookup::findLine()`
+  (tidak percaya `sisa` yang dikirim client, bisa basi kalau ada SJ lain masuk di antara admin
+  buka form & submit), tolak 422 kalau melebihi sisa TERKINI atau id-nya tidak ditemukan. SPK
+  masing-masing item baru ketahuan dari hasil `findLine()`/`SuratJalan::items()` (JOIN ke
+  `t_penjualan_detail_performa.penjualan_id`), **tidak dikirim terpisah lewat body `penjualan_id`
+  lagi** — parameter itu sudah dihapus dari kontrak `POST /admin/sj`.
+- Kolom header `ekspedisi_t_surat_jalan.penjualan_id` **TIDAK diisi lagi** dari jalur manual
+  (`store()`) — SPK-nya cuma bisa diketahui per-item lewat `items[].penjualan_id` sekarang,
+  bukan di header. Kolom itu TETAP dipakai jalur trip-linked lama (`upsertFromTripPhoto()`),
+  yang selalu 1 SPK per trip (tautan plotting, lihat SPK ready-kirim) — trip TIDAK pernah punya
+  info per-lini-produk, jadi tidak ikut breakdown ini; kalau nanti mau breakdown juga di jalur
+  checkpoint, itu perubahan terpisah.
+- `SpkReadyKirim::listBelumSj()` (tab "SPK" ekspedisi-apk) ikut disesuaikan — dicek dari DUA
+  jalur (header `penjualan_id` ATAU `ekspedisi_t_surat_jalan_item` JOIN
+  `t_penjualan_detail_performa`), supaya SPK yang SJ-nya cuma tercatat lewat item (bukan header)
+  tidak salah muncul lagi sebagai "belum ada SJ".
+- Kalau `items` diisi, `jumlah_kirim` di header **dihitung otomatis** dari total SEMUA item
+  (lintas SPK manapun) — field "Jumlah kirim" flat di form disembunyikan begitu ada minimal 1
+  SPK ditambahkan.
 
 **SJ tanpa SPK tetap didukung** (`items` opsional) — utk pengiriman lepas yang bukan dari SPK
-mana pun (mis. sampel, transfer internal antar gudang). Kosongkan "Nomor SPK" di form, `jumlah_kirim`
-manual seperti sebelumnya. SJ yang auto-dibuat dari checkpoint foto supir
-(`upsertFromTripPhoto()`) juga TIDAK ikut breakdown ini — trip cuma bawa `penjualan_id` (tautan
-plotting, lihat SPK ready-kirim), tidak pernah punya info per-lini-produk; kalau nanti mau
-breakdown juga di jalur checkpoint, itu perubahan terpisah.
+mana pun (mis. sampel, transfer internal antar gudang). Jangan tambah SPK apa pun di form,
+`jumlah_kirim` manual seperti sebelumnya.
 
 #### Alur validasi (2026-08-19)
 
@@ -408,7 +443,8 @@ ekspedisi-apk-backend/
 │   ├── 04_create_ekspedisi_t_surat_jalan.sql # CREATE TABLE modul surat jalan MILIK app ini (lihat bagian di atas)
 │   ├── 05_alter_surat_jalan_pengirim_tgl_kirim.sql # ALTER tambah kolom pengirim & tgl_kirim (lihat bagian di atas)
 │   ├── 06_alter_surat_jalan_validasi.sql # ALTER tambah status 'tervalidasi' + foto_validasi/divalidasi_oleh/divalidasi_at
-│   └── 07_create_ekspedisi_t_surat_jalan_item.sql # CREATE TABLE breakdown per lini produk SPK (lihat bagian di atas)
+│   ├── 07_create_ekspedisi_t_surat_jalan_item.sql # CREATE TABLE breakdown per lini produk SPK (lihat bagian di atas)
+│   └── 08_rename_pengirim_ke_penerima.sql # RENAME kolom pengirim -> penerima (lihat bagian di atas)
 ├── public/
 │   ├── index.php             # front controller
 │   └── uploads/trips/{id}/   # foto checkpoint, disajikan langsung sbg file statis
