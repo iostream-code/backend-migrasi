@@ -27,7 +27,7 @@ class DriverController extends Controller
         $name = $this->userName($pdo, $userId);
 
         $stmt = $pdo->prepare(
-            "SELECT * FROM driver_t_trip WHERE driver_id = :driver_id AND status = 'in_progress' ORDER BY id DESC"
+            "SELECT * FROM ekspedisi_t_trip WHERE driver_id = :driver_id AND status = 'in_progress' ORDER BY id DESC"
         );
         $stmt->execute(['driver_id' => $driverId]);
         $trips = $stmt->fetchAll();
@@ -56,7 +56,7 @@ class DriverController extends Controller
         $pdo = Database::connection();
         $driverId = SupirProfile::ensure($pdo, (int) $request->getAttribute('user_id'));
 
-        $stmt = $pdo->prepare('UPDATE driver_m_supir SET driver_status = :status WHERE id = :id');
+        $stmt = $pdo->prepare('UPDATE ekspedisi_m_supir SET driver_status = :status WHERE id = :id');
         $stmt->execute(['status' => $status, 'id' => $driverId]);
 
         return $this->json($response, ['status' => $status]);
@@ -82,7 +82,7 @@ class DriverController extends Controller
             : date('Y-m-d H:i:s');
 
         $insert = $pdo->prepare(
-            'INSERT INTO driver_t_location (driver_id, lat, lng, speed, heading, accuracy, recorded_at)
+            'INSERT INTO ekspedisi_t_location (driver_id, lat, lng, speed, heading, accuracy, recorded_at)
              VALUES (:driver_id, :lat, :lng, :speed, :heading, :accuracy, :recorded_at)'
         );
         $insert->execute([
@@ -95,10 +95,10 @@ class DriverController extends Controller
             'recorded_at' => $recordedAt,
         ]);
 
-        // Duplikat posisi terakhir di driver_m_supir supaya query admin/drivers
-        // cepat (tanpa perlu subquery/join ke riwayat driver_t_location tiap saat).
+        // Duplikat posisi terakhir di ekspedisi_m_supir supaya query admin/drivers
+        // cepat (tanpa perlu subquery/join ke riwayat ekspedisi_t_location tiap saat).
         $update = $pdo->prepare(
-            'UPDATE driver_m_supir SET last_lat = :lat, last_lng = :lng, last_ping_at = :now WHERE id = :id'
+            'UPDATE ekspedisi_m_supir SET last_lat = :lat, last_lng = :lng, last_ping_at = :now WHERE id = :id'
         );
         $update->execute(['lat' => $body['lat'], 'lng' => $body['lng'], 'now' => date('Y-m-d H:i:s'), 'id' => $driverId]);
 
@@ -158,7 +158,7 @@ class DriverController extends Controller
         // Satu checkpoint cuma boleh py 1 foto aktif per trip -- upload ulang
         // checkpoint yang sama menimpa baris lama (UNIQUE trip_id+type di schema.sql).
         $upsert = $pdo->prepare(
-            'INSERT INTO driver_t_trip_photo (trip_id, type, path, lat, lng)
+            'INSERT INTO ekspedisi_t_trip_photo (trip_id, type, path, lat, lng)
              VALUES (:trip_id, :type, :path, :lat, :lng)
              ON DUPLICATE KEY UPDATE path = VALUES(path), lat = VALUES(lat), lng = VALUES(lng)'
         );
@@ -198,7 +198,7 @@ class DriverController extends Controller
         }
 
         $update = $pdo->prepare(
-            "UPDATE driver_t_trip SET status = 'completed', completed_at = :now WHERE id = :id"
+            "UPDATE ekspedisi_t_trip SET status = 'completed', completed_at = :now WHERE id = :id"
         );
         $update->execute(['now' => date('Y-m-d H:i:s'), 'id' => $tripId]);
 
@@ -213,7 +213,7 @@ class DriverController extends Controller
     {
         $driverId = SupirProfile::ensure($pdo, $userId);
 
-        $stmt = $pdo->prepare('SELECT * FROM driver_t_trip WHERE id = :id AND driver_id = :driver_id LIMIT 1');
+        $stmt = $pdo->prepare('SELECT * FROM ekspedisi_t_trip WHERE id = :id AND driver_id = :driver_id LIMIT 1');
         $stmt->execute(['id' => $tripId, 'driver_id' => $driverId]);
         $trip = $stmt->fetch();
 
@@ -222,7 +222,7 @@ class DriverController extends Controller
 
     private function findDriver(\PDO $pdo, int $driverId): array
     {
-        $stmt = $pdo->prepare('SELECT * FROM driver_m_supir WHERE id = :id LIMIT 1');
+        $stmt = $pdo->prepare('SELECT * FROM ekspedisi_m_supir WHERE id = :id LIMIT 1');
         $stmt->execute(['id' => $driverId]);
         return $stmt->fetch();
     }

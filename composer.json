@@ -1,6 +1,6 @@
 {
-    "name": "koperindo/driver-apk-backend",
-    "description": "Backend khusus driver-apk (Slim 4, tanpa ORM/migration -- lihat README.md & schema.sql)",
+    "name": "koperindo/ekspedisi-apk-backend",
+    "description": "Backend aplikasi Ekspedisi -- tracking supir (internal & eksternal) + rencana modul surat jalan (Slim 4, tanpa ORM/migration -- lihat README.md & database/)",
     "type": "project",
     "require": {
         "php": "^8.1",

@@ -7,7 +7,7 @@ namespace App\Support;
 use PDO;
 
 /**
- * Format baris driver_t_trip jadi shape JSON yang dipakai frontend, dipakai
+ * Format baris ekspedisi_t_trip jadi shape JSON yang dipakai frontend, dipakai
  * bareng oleh DriverController & AdminController supaya current_step_label
  * dihitung dengan cara yang sama persis di kedua tempat.
  */
@@ -23,7 +23,7 @@ class TripPresenter
 
     public static function completedSteps(PDO $pdo, int $tripId): array
     {
-        $stmt = $pdo->prepare('SELECT type FROM driver_t_trip_photo WHERE trip_id = :trip_id');
+        $stmt = $pdo->prepare('SELECT type FROM ekspedisi_t_trip_photo WHERE trip_id = :trip_id');
         $stmt->execute(['trip_id' => $tripId]);
         return $stmt->fetchAll(PDO::FETCH_COLUMN);
     }

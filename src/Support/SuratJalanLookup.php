@@ -9,8 +9,8 @@ use PDO;
 /**
  * Query READ-ONLY ke tabel surat_jalan milik backend-production (database
  * produksi yang sama) -- dipakai buat validasi & menampilkan info singkat
- * saat admin menautkan driver_t_trip.no_surat_jalan ke SJ asli. TIDAK PERNAH
- * menulis ke surat_jalan atau tabel manapun di luar driver_* dari sini.
+ * saat admin menautkan ekspedisi_t_trip.no_surat_jalan ke SJ asli. TIDAK PERNAH
+ * menulis ke surat_jalan atau tabel manapun di luar ekspedisi_* dari sini.
  *
  * no_surat_jalan BUKAN kolom unik di surat_jalan -- 1 nomor SJ bisa punya
  * banyak baris (1 baris per item produk dalam pengiriman itu). Query ini

@@ -9,9 +9,9 @@ use PDO;
 /**
  * Query READ-ONLY ke m_expedisi/m_expedisi_tarif milik backend-production
  * (database produksi yang sama) -- daftar perusahaan ekspedisi aktif & tarif
- * per rute, dipakai admin memilih ekspedisi saat menyerahkan SPK ke pihak
- * ketiga (lihat driver_t_ekspedisi). TIDAK PERNAH menulis ke tabel manapun
- * di luar driver_* dari sini.
+ * per rute, dipakai dropdown opsional "Perusahaan Ekspedisi" saat Tambah Supir
+ * Eksternal (lihat ekspedisi_m_supir.tipe/id_expedisi). TIDAK PERNAH menulis
+ * ke tabel manapun di luar ekspedisi_* dari sini.
  */
 class ExpedisiLookup
 {

@@ -83,7 +83,7 @@ class AuthController extends Controller
 
     private function isAdmin(\PDO $pdo, int $userId): bool
     {
-        $stmt = $pdo->prepare('SELECT 1 FROM driver_m_admin_access WHERE user_id = :user_id LIMIT 1');
+        $stmt = $pdo->prepare('SELECT 1 FROM ekspedisi_m_admin_access WHERE user_id = :user_id LIMIT 1');
         $stmt->execute(['user_id' => $userId]);
         return (bool) $stmt->fetchColumn();
     }

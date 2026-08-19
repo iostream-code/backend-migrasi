@@ -19,7 +19,7 @@ class AdminController extends Controller
     /**
      * GET /admin/drivers
      * Daftar semua supir + posisi & status terakhir, dipakai untuk marker di peta.
-     * NB: {driver} pada endpoint ini adalah id dari driver_m_supir, bukan user_id shared_m_users.
+     * NB: {driver} pada endpoint ini adalah id dari ekspedisi_m_supir, bukan user_id shared_m_users.
      */
     public function drivers(Request $request, Response $response): Response
     {
@@ -30,14 +30,14 @@ class AdminController extends Controller
         $stmt = $pdo->query(
             "SELECT s.id, s.tipe, s.driver_status, s.last_lat, s.last_lng, s.last_ping_at,
                     COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama
-             FROM driver_m_supir s
+             FROM ekspedisi_m_supir s
              LEFT JOIN shared_m_users u ON u.user_id = s.user_id
              ORDER BY nama"
         );
         $drivers = $stmt->fetchAll();
 
         $tripStmt = $pdo->prepare(
-            "SELECT * FROM driver_t_trip WHERE driver_id = :driver_id AND status = 'in_progress' ORDER BY id DESC LIMIT 1"
+            "SELECT * FROM ekspedisi_t_trip WHERE driver_id = :driver_id AND status = 'in_progress' ORDER BY id DESC LIMIT 1"
         );
 
         $result = array_map(function ($driver) use ($pdo, $tripStmt) {
@@ -97,7 +97,7 @@ class AdminController extends Controller
 
         $driverId = SupirProfile::ensure($pdo, (int) $user['user_id']);
 
-        $statusStmt = $pdo->prepare('SELECT driver_status FROM driver_m_supir WHERE id = :id');
+        $statusStmt = $pdo->prepare('SELECT driver_status FROM ekspedisi_m_supir WHERE id = :id');
         $statusStmt->execute(['id' => $driverId]);
 
         return $this->json($response, [
@@ -122,8 +122,8 @@ class AdminController extends Controller
         }
 
         $insert = $pdo->prepare(
-            "INSERT INTO driver_m_supir (tipe, nama_eksternal, telepon_eksternal, id_expedisi, driver_status)
-             VALUES ('eksternal', :nama, :telepon, :id_expedisi, 'offline')"
+            "INSERT INTO ekspedisi_m_supir (tipe, nama_eksternal, telepon_eksternal, id_expedisi, driver_status)
+            VALUES ('eksternal', :nama, :telepon, :id_expedisi, 'offline')"
         );
         $insert->execute([
             'nama' => $nama,
@@ -152,9 +152,9 @@ class AdminController extends Controller
             'SELECT s.id, s.tipe, s.driver_status,
                     COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama,
                     COALESCE(u.hp, s.telepon_eksternal) AS hp
-             FROM driver_m_supir s
-             LEFT JOIN shared_m_users u ON u.user_id = s.user_id
-             WHERE s.id = :id LIMIT 1'
+            FROM ekspedisi_m_supir s
+            LEFT JOIN shared_m_users u ON u.user_id = s.user_id
+            WHERE s.id = :id LIMIT 1'
         );
         $stmt->execute(['id' => $driverId]);
         $driver = $stmt->fetch();
@@ -163,17 +163,17 @@ class AdminController extends Controller
             return $this->error($response, 'Supir tidak ditemukan.', 404);
         }
 
-        $tripsStmt = $pdo->prepare('SELECT * FROM driver_t_trip WHERE driver_id = :driver_id ORDER BY id DESC');
+        $tripsStmt = $pdo->prepare('SELECT * FROM ekspedisi_t_trip WHERE driver_id = :driver_id ORDER BY id DESC');
         $tripsStmt->execute(['driver_id' => $driverId]);
         $trips = $tripsStmt->fetchAll();
 
-        $photosStmt = $pdo->prepare('SELECT type, path FROM driver_t_trip_photo WHERE trip_id = :trip_id');
+        $photosStmt = $pdo->prepare('SELECT type, path FROM ekspedisi_t_trip_photo WHERE trip_id = :trip_id');
         $statusLabels = ['in_progress' => 'Sedang Berjalan', 'completed' => 'Selesai'];
         $appUrl = rtrim($_ENV['APP_URL'], '/');
 
         $trips = array_map(function ($trip) use ($photosStmt, $statusLabels, $appUrl) {
             $photosStmt->execute(['trip_id' => $trip['id']]);
-            $photos = array_map(fn ($p) => [
+            $photos = array_map(fn($p) => [
                 'type' => $p['type'],
                 'url' => $appUrl . '/' . $p['path'],
             ], $photosStmt->fetchAll());
@@ -246,7 +246,7 @@ class AdminController extends Controller
         $pdo = Database::connection();
         $driverId = (int) $args['driver'];
 
-        $exists = $pdo->prepare('SELECT 1 FROM driver_m_supir WHERE id = :id LIMIT 1');
+        $exists = $pdo->prepare('SELECT 1 FROM ekspedisi_m_supir WHERE id = :id LIMIT 1');
         $exists->execute(['id' => $driverId]);
         if (!$exists->fetchColumn()) {
             return $this->error($response, 'Supir tidak ditemukan.', 404);
@@ -265,8 +265,8 @@ class AdminController extends Controller
         }
 
         $insert = $pdo->prepare(
-            "INSERT INTO driver_t_trip (driver_id, destination, no_surat_jalan, penjualan_id, status, started_at)
-             VALUES (:driver_id, :destination, :no_surat_jalan, :penjualan_id, 'in_progress', :now)"
+            "INSERT INTO ekspedisi_t_trip (driver_id, destination, no_surat_jalan, penjualan_id, status, started_at)
+            VALUES (:driver_id, :destination, :no_surat_jalan, :penjualan_id, 'in_progress', :now)"
         );
         $insert->execute([
             'driver_id' => $driverId,
@@ -308,7 +308,7 @@ class AdminController extends Controller
         $pdo = Database::connection();
         $tripId = (int) $args['trip'];
 
-        $exists = $pdo->prepare('SELECT 1 FROM driver_t_trip WHERE id = :id LIMIT 1');
+        $exists = $pdo->prepare('SELECT 1 FROM ekspedisi_t_trip WHERE id = :id LIMIT 1');
         $exists->execute(['id' => $tripId]);
         if (!$exists->fetchColumn()) {
             return $this->error($response, 'Perjalanan tidak ditemukan.', 404);
