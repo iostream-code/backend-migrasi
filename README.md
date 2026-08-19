@@ -29,11 +29,15 @@ punya pilihan lain selain SQL mentah.
 
 Project ini awalnya khusus tracking supir internal ("driver-apk"). Berkembang jadi aplikasi
 ekspedisi yang lebih luas (supir internal + eksternal, plotting SPK, rencana modul surat jalan)
-— nama & prefix tabel di-rename mengikuti (`driver_*` → `ekspedisi_*`, lihat
-`database/10_rename_driver_to_ekspedisi.sql`). Migration `01`–`09` **sengaja tidak diedit** —
-itu arsip historis apa yang benar-benar dijalankan saat itu (tabelnya memang bernama `driver_*`
-waktu dibuat); kode aplikasi (PHP) sekarang 100% merujuk nama baru. Detail lengkap kenapa &
-pertimbangannya ada di histori git (commit rename).
+— nama & prefix tabel ikut diganti (`driver_*` → `ekspedisi_*`).
+
+**Catatan riwayat migration (2026-08-19):** sempat ada 10 file migration terpisah (create →
+alter → tabel eksperimen yang dibatalkan → drop → alter lagi → rename `driver_*` →
+`ekspedisi_*`), hasil evolusi desain beberapa sesi berturut-turut. Karena data produksi masih
+nol/dummy semua saat itu, tabel lama di-drop manual dan seluruh migration **dikonsolidasikan
+jadi satu `01_schema.sql` bersih** (drop-in replacement, struktur akhirnya identik — cuma
+riwayat langkah-per-langkahnya yang dirapikan). Riwayat evolusi lengkap (kenapa desain berubah
+beberapa kali) tetap ada di histori git kalau perlu ditelusuri lagi.
 
 ## Arsitektur singkat
 
@@ -45,7 +49,7 @@ pertimbangannya ada di histori git (commit rename).
   termasuk FK ke `shared_m_users` karena sekarang satu database yang sama). Jalankan manual,
   urut nomornya, satu-satu: `mysql -u <user> -p <database> < database/01_schema.sql`, dst.
   Tidak ada `php artisan migrate`/runner apa pun — kalau nanti ada perubahan skema baru, tambah
-  file baru dengan nomor berikutnya (mis. `11_...sql`), jangan edit file yang sudah pernah
+  file baru dengan nomor berikutnya (mis. `04_...sql`), jangan edit file yang sudah pernah
   dijalankan.
 - **Tanpa ORM**: semua query pakai PDO + prepared statement langsung di tiap Controller
   (`src/Controllers/`). `src/Database.php` cuma wrapper koneksi PDO tipis (singleton).
@@ -87,29 +91,12 @@ DB_PASSWORD=<password>
 JWT_SECRET=<string acak panjang, mis. `openssl rand -base64 48`>
 ```
 
-**Instalasi baru** (belum pernah jalankan file `database/` manapun) — jalankan **semua** file
-urut nomor, `01` sampai yang terbaru, TANPA kecuali. Ini penting: `01`–`09` historis membuat
-tabel bernama `driver_*` (nama lama, apa adanya saat pertama ditulis) — **baru file `10` yang
-me-rename ke `ekspedisi_*`**. Kode aplikasi (PHP) di repo ini cuma kenal nama `ekspedisi_*` —
-kalau berhenti di file `09` dan lupa jalankan `10`, app ini tidak akan jalan sama sekali (semua
-query gagal, tabel "tidak ditemukan"):
-
 ```bash
-mysql -u <username> -p <database> < database/01_schema.sql
-mysql -u <username> -p <database> < database/02_seed_admin_access.sql   # edit daftar username dulu, lihat di bawah
-mysql -u <username> -p <database> < database/03_seed_dummy_drivers.sql  # opsional
-mysql -u <username> -p <database> < database/04_alter_add_no_surat_jalan_to_driver_t_trip.sql
-mysql -u <username> -p <database> < database/05_add_penjualan_id_to_driver_t_trip.sql
-mysql -u <username> -p <database> < database/06_create_driver_t_ekspedisi.sql
-mysql -u <username> -p <database> < database/07_alter_driver_m_supir_add_eksternal.sql
-mysql -u <username> -p <database> < database/08_drop_driver_t_ekspedisi.sql
-mysql -u <username> -p <database> < database/09_create_driver_t_pengajuan_biaya.sql
-mysql -u <username> -p <database> < database/10_rename_driver_to_ekspedisi.sql   # WAJIB -- lihat catatan di atas
+mysql -u <username> -p <database> < database/01_schema.sql             # bikin 6 tabel ekspedisi_* baru (TIDAK menyentuh tabel lain)
+mysql -u <username> -p <database> < database/02_seed_admin_access.sql  # edit daftar username dulu, lihat di bawah
+mysql -u <username> -p <database> < database/03_seed_dummy_drivers.sql # opsional
 php -S 127.0.0.1:8000 -t public
 ```
-
-**Instalasi yang sudah pernah jalankan `01`–`09` sebelumnya** (mis. lanjutan sesi sebelum rename
-ini ada) — tinggal jalankan `10_rename_driver_to_ekspedisi.sql` saja.
 
 Edit dulu daftar `username` di [`database/02_seed_admin_access.sql`](database/02_seed_admin_access.sql)
 sebelum menjalankannya — cari berdasarkan `username` (bukan `user_id` mentah) supaya tidak
@@ -118,15 +105,15 @@ nambah admin lagi. Query terakhir di skrip itu langsung menampilkan siapa saja y
 ke-seed, untuk verifikasi. Tanpa ini tidak ada seorang pun yang bisa login sebagai
 admin/dispatcher (`ekspedisi_m_admin_access` mulai kosong).
 
-**Sudah dites end-to-end terhadap MySQL produksi asli** (bukan cuma sandbox dev), sebelum
-rename ke `ekspedisi_*` — login sungguhan (`POST /login` dgn kredensial `shared_m_users` real),
-query `shared_m_users` (331 baris), seed admin (`ITAI`), `POST /admin/drivers` (bikin profil
-supir), `POST /admin/drivers/{driver}/trip` dengan `penjualan_id` SPK asli, dan
+**Sudah dites end-to-end terhadap MySQL produksi asli** (bukan cuma sandbox dev) — login
+sungguhan (`POST /login` dgn kredensial `shared_m_users` real), query `shared_m_users` (331
+baris), seed admin (`ITAI`), `POST /admin/drivers` (bikin profil supir, internal & eksternal),
+`POST /admin/drivers/{driver}/trip` dengan `penjualan_id` SPK asli, dan
 `GET /admin/surat-jalan/{no}` (join ke `surat_jalan` produksi, dapat data client asli) semuanya
-sudah dicoba langsung & berhasil. **Rename ke `ekspedisi_*` sendiri belum dites ulang di
-lingkungan produksi** (butuh Anda jalankan `database/10_...sql` dulu) — struktur/logic-nya
-sama persis, cuma nama tabel yang beda, risikonya rendah, tapi tetap perlu diverifikasi sekali
-lagi setelah dijalankan.
+sudah dicoba langsung & berhasil — semua terhadap struktur yang skema-nya identik dgn
+`01_schema.sql` saat ini (dites sebelum konsolidasi migration, lihat bagian "Riwayat nama" di
+atas), belum dites ulang dari `01_schema.sql` yang baru dikonsolidasi ini secara harfiah, tapi
+strukturnya sudah dikonfirmasi sama persis lewat `SHOW CREATE TABLE` di database live.
 
 ## Kontrak API
 
@@ -239,12 +226,13 @@ sekaligus), klik "Plot" langsung bikin `ekspedisi_t_trip` tertaut ke `penjualan_
 
 ### Supir eksternal / pihak ketiga (`ekspedisi_m_supir.tipe = 'eksternal'`)
 
-**(Riwayat desain: percobaan pertama pakai tabel terpisah `driver_t_ekspedisi` — SPK langsung
-ke perusahaan ekspedisi, tanpa lewat konsep "supir" — DIBATALKAN & di-drop di
-`08_drop_driver_t_ekspedisi.sql`, belum sempat ada data/UI. Diganti pendekatan di bawah, lebih
-sederhana: satu alur "supir" utk internal maupun eksternal.)**
+**(Riwayat desain, lihat histori git: percobaan pertama pakai tabel terpisah
+`driver_t_ekspedisi` — SPK langsung ke perusahaan ekspedisi, tanpa lewat konsep "supir" —
+DIBATALKAN & di-drop, belum sempat ada data/UI. File-nya sendiri sudah tidak ada lagi di
+`database/` setelah konsolidasi migration. Diganti pendekatan di bawah, lebih sederhana: satu
+alur "supir" utk internal maupun eksternal.)**
 
-`ekspedisi_m_supir` punya kolom `tipe` (`internal`/`eksternal`, `database/07_...sql`). Supir
+`ekspedisi_m_supir` punya kolom `tipe` (`internal`/`eksternal`, lihat `database/01_schema.sql`). Supir
 eksternal (bukan pegawai — freelance/lepas, atau bekerja utk perusahaan ekspedisi tertentu)
 **tidak punya akun `shared_m_users` sama sekali** — `user_id` NULL, `nama_eksternal`/
 `telepon_eksternal` diisi langsung, `id_expedisi` (tautan logis opsional ke `m_expedisi`)
@@ -265,7 +253,7 @@ Eksternal. `tarif()` masih ada tapi belum disambungkan ke endpoint manapun.
 
 ### Pengajuan biaya ke finance (`ekspedisi_t_pengajuan_biaya`)
 
-Tabel (`database/09_...sql`), **FK asli** ke `ekspedisi_t_trip` (bukan tautan logis — dua-
+Tabel (lihat `database/01_schema.sql`), **FK asli** ke `ekspedisi_t_trip` (bukan tautan logis — dua-
 duanya tabel milik app ini sendiri). Berlaku utk trip supir internal MAUPUN eksternal — admin
 input `nominal_diajukan` **manual** (bukan hasil hitungan sistem/tarif), opsional `keterangan`.
 Status `diajukan` → `disetujui`/`ditolak` (kolom `nominal_disetujui`, `catatan_finance`,
@@ -281,16 +269,9 @@ form-nya).
 ```
 ekspedisi-apk-backend/
 ├── database/                 # SQL mentah, satu file per langkah, dijalankan manual URUT NOMOR
-│   ├── 01_schema.sql            # CREATE TABLE 5 tabel (historis: driver_*, lihat 10) -- bukan migration, sekali jalan
+│   ├── 01_schema.sql            # CREATE TABLE 6 tabel ekspedisi_* -- konsolidasi bersih, bukan migration
 │   ├── 02_seed_admin_access.sql  # seed whitelist admin/dispatcher (cari by username, idempotent)
-│   ├── 03_seed_dummy_drivers.sql # pre-provision profil supir dummy (cari by username, idempotent)
-│   ├── 04_alter_add_no_surat_jalan_to_driver_t_trip.sql  # ALTER: tambah kolom no_surat_jalan
-│   ├── 05_add_penjualan_id_to_driver_t_trip.sql          # ALTER: tambah kolom penjualan_id
-│   ├── 06_create_driver_t_ekspedisi.sql                  # (DIBATALKAN, lihat 08) CREATE TABLE driver_t_ekspedisi
-│   ├── 07_alter_driver_m_supir_add_eksternal.sql         # ALTER: kolom tipe + kolom supir eksternal
-│   ├── 08_drop_driver_t_ekspedisi.sql                    # DROP TABLE driver_t_ekspedisi (desain diganti 07)
-│   ├── 09_create_driver_t_pengajuan_biaya.sql            # CREATE TABLE pengajuan biaya
-│   └── 10_rename_driver_to_ekspedisi.sql                 # RENAME semua tabel driver_* -> ekspedisi_* (WAJIB)
+│   └── 03_seed_dummy_drivers.sql # pre-provision profil supir INTERNAL dummy (cari by username, idempotent)
 ├── public/
 │   ├── index.php             # front controller
 │   └── uploads/trips/{id}/   # foto checkpoint, disajikan langsung sbg file statis
