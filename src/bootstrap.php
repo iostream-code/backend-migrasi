@@ -91,6 +91,7 @@ $app->group('', function ($group) use ($auth, $driver, $admin) {
     // --- Admin / Dispatcher (digerbangi AdminOnlyMiddleware juga) ---
     $group->group('', function ($adminGroup) use ($admin) {
         $adminGroup->get('/admin/drivers', [$admin, 'drivers']);
+        $adminGroup->post('/admin/drivers', [$admin, 'createDriver']);
         $adminGroup->get('/admin/drivers/{driver}', [$admin, 'driverDetail']);
         $adminGroup->post('/admin/drivers/{driver}/trip', [$admin, 'createTrip']);
     })->add(new AdminOnlyMiddleware());

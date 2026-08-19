@@ -41,8 +41,10 @@ punya pilihan lain selain SQL mentah.
   blacklist terpisah nanti.
 - **Role**: tidak ada kolom role di `shared_m_users`. Admin/dispatcher ditentukan lewat
   whitelist tabel `driver_m_admin_access` (ada baris untuk `user_id` itu → admin). User lain
-  otomatis diperlakukan sebagai supir (profil `driver_m_supir` dibuat otomatis saat pertama
-  login — lihat `App\Support\SupirProfile::ensure()`).
+  otomatis diperlakukan sebagai supir. Profil `driver_m_supir` dibuat otomatis saat pertama
+  login (`App\Support\SupirProfile::ensure()`), atau bisa di-provision lebih dulu oleh admin
+  lewat `POST /admin/drivers` (fitur "Tambah Supir" di frontend) — keduanya idempotent &
+  ujung-ujungnya manggil helper yang sama.
 - **Endpoint admin digerbangi server-side** oleh `src/Middleware/AdminOnlyMiddleware.php` —
   cek `role` dari token, bukan cuma dipercaya dari router client-side.
 - **Foto checkpoint** disimpan langsung di `public/uploads/trips/{trip_id}/` (file statis,
@@ -109,6 +111,7 @@ frontend, cuma implementasi & auth mechanism-nya yang beda (Bearer JWT, tetap ta
 | POST | `/driver/trip/{trip}/photo` | token | multipart: `photo`, `type` (`berangkat`\|`serah_terima`\|`sj`), `lat`, `lng` |
 | POST | `/driver/trip/{trip}/complete` | token | — |
 | GET | `/admin/drivers` | token + admin | `[{ id, name, status, lat, lng, current_step_label }]` |
+| POST | `/admin/drivers` | token + admin | `{ username }` → `{ id, name, status }`, 201. Cari akun di `shared_m_users` lewat `username`, buat/pastikan profil `driver_m_supir`-nya ada (idempotent — kalau sudah py profil, yang lama dikembalikan apa adanya) |
 | GET | `/admin/drivers/{driver}` | token + admin | `{ id, name, phone, status, trips: [...] }` |
 | POST | `/admin/drivers/{driver}/trip` | token + admin | `{ destination }` |
 
@@ -121,6 +124,7 @@ frontend, cuma implementasi & auth mechanism-nya yang beda (Bearer JWT, tetap ta
 driver-apk-backend/
 ├── schema.sql              # CREATE TABLE mentah -- jalankan manual, bukan migration
 ├── seed_admin_access.sql    # seed whitelist admin/dispatcher (cari by username, idempotent)
+├── seed_dummy_drivers.sql    # pre-provision profil supir dummy (cari by username, idempotent)
 ├── public/
 │   ├── index.php             # front controller
 │   └── uploads/trips/{id}/   # foto checkpoint, disajikan langsung sbg file statis

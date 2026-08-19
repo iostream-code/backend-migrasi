@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Database;
+use App\Support\SupirProfile;
 use App\Support\TripPresenter;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -50,6 +51,46 @@ class AdminController extends Controller
         }, $drivers);
 
         return $this->json($response, $result);
+    }
+
+    /**
+     * POST /admin/drivers
+     * Tambah supir baru: cari akun pegawai di shared_m_users lewat username
+     * (supir TIDAK punya akun terpisah, sama seperti admin -- lihat AuthController),
+     * lalu pastikan ada profil driver_m_supir untuknya. Idempotent -- kalau pegawai
+     * itu sudah py profil supir, yang sudah ada dikembalikan apa adanya (bukan error).
+     * body: { username }
+     */
+    public function createDriver(Request $request, Response $response): Response
+    {
+        $body = (array) $request->getParsedBody();
+        $username = trim((string) ($body['username'] ?? ''));
+
+        if ($username === '') {
+            return $this->error($response, 'username wajib diisi.');
+        }
+
+        $pdo = Database::connection();
+        $stmt = $pdo->prepare(
+            'SELECT user_id, nama_lengkap FROM shared_m_users WHERE username = :username AND user_active = 1 LIMIT 1'
+        );
+        $stmt->execute(['username' => $username]);
+        $user = $stmt->fetch();
+
+        if (!$user) {
+            return $this->error($response, 'Username tidak ditemukan atau akun tidak aktif.', 404);
+        }
+
+        $driverId = SupirProfile::ensure($pdo, (int) $user['user_id']);
+
+        $statusStmt = $pdo->prepare('SELECT driver_status FROM driver_m_supir WHERE id = :id');
+        $statusStmt->execute(['id' => $driverId]);
+
+        return $this->json($response, [
+            'id' => $driverId,
+            'name' => $user['nama_lengkap'],
+            'status' => $statusStmt->fetchColumn(),
+        ], 201);
     }
 
     /**
