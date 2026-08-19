@@ -16,10 +16,11 @@
 INSERT INTO driver_m_admin_access (user_id)
 SELECT user_id FROM shared_m_users
 WHERE username IN (
-    'ganti_username_admin_1'
-    -- , 'ganti_username_admin_2'
+    'ITAI'
 )
-ON DUPLICATE KEY UPDATE user_id = user_id;
+-- Nama tabel WAJIB di-qualify di sini -- tanpa itu `user_id` ambigu (ada di
+-- driver_m_admin_access maupun di shared_m_users lewat SELECT di atas).
+ON DUPLICATE KEY UPDATE driver_m_admin_access.user_id = driver_m_admin_access.user_id;
 
 -- Verifikasi: tampilkan siapa saja yang sekarang jadi admin/dispatcher.
 -- Kalau username di atas salah ketik / tidak ada di shared_m_users, baris itu
