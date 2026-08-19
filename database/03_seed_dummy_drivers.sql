@@ -7,7 +7,7 @@
 -- beberapa supir dummy sebelum ada yang benar-benar login/ditambahkan lewat
 -- app -- mis. buat demo/testing map & daftar supir dulu.
 --
--- Jalankan manual: mysql -u <user> -p <database_produksi> < seed_dummy_drivers.sql
+-- Jalankan manual: mysql -u <user> -p <database_produksi> < database/03_seed_dummy_drivers.sql
 -- Aman dijalankan berkali-kali (idempotent) -- username yang sudah py profil
 -- supir dilewati (ON DUPLICATE KEY UPDATE no-op), bukan bikin baris duplikat/error.
 
@@ -23,7 +23,7 @@ WHERE username IN (
     'TstArya',
     'TstCrysna'
 )
--- Nama tabel WAJIB di-qualify di sini (pelajaran dari seed_admin_access.sql) --
+-- Nama tabel WAJIB di-qualify di sini (pelajaran dari 02_seed_admin_access.sql) --
 -- tanpa itu `user_id` ambigu (ada di driver_m_supir maupun di shared_m_users
 -- lewat SELECT di atas).
 ON DUPLICATE KEY UPDATE driver_m_supir.user_id = driver_m_supir.user_id;

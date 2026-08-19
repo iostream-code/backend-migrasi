@@ -1,7 +1,13 @@
--- driver-apk-backend -- skema tabel domain driver.
+-- driver-apk-backend -- skema tabel domain driver (langkah 1 dari database/).
 --
--- BUKAN migration Laravel/framework apa pun -- jalankan manual sekali:
---   mysql -u <user> -p <database_produksi> < schema.sql
+-- BUKAN migration Laravel/framework apa pun -- semua file di database/ dijalankan
+-- MANUAL & SEKALI, urut sesuai nomor depan nama filenya:
+--   mysql -u <user> -p <database_produksi> < database/01_schema.sql
+--   mysql -u <user> -p <database_produksi> < database/02_seed_admin_access.sql
+--   mysql -u <user> -p <database_produksi> < database/03_seed_dummy_drivers.sql
+--   mysql -u <user> -p <database_produksi> < database/04_alter_add_no_surat_jalan_to_driver_t_trip.sql
+-- (02 & 03 boleh dilewati kalau tidak butuh whitelist admin/dummy driver saat itu
+-- juga -- tapi tetap harus dijalankan sebelum fitur terkait dipakai.)
 --
 -- Ditulis mengikuti gaya penulisan tabel di db_dump.sql (backend-production):
 -- ENGINE=InnoDB, utf8mb4/utf8mb4_unicode_ci, PK `id` bigint unsigned
@@ -38,12 +44,6 @@ CREATE TABLE `driver_t_trip` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `driver_id` bigint unsigned NOT NULL COMMENT 'FK ke driver_m_supir.id',
   `destination` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  -- Tautan LOGIS (bukan FOREIGN KEY sungguhan) ke surat_jalan.no_surat_jalan
-  -- (tabel lama milik backend-production, TIDAK disentuh skema/kodenya --
-  -- lihat catatan integrasi di README). Sengaja bukan FK asli krn
-  -- no_surat_jalan BUKAN kolom unik di surat_jalan (1 no SJ = banyak baris,
-  -- 1 baris per item produk). Nullable -- tidak semua trip harus py SJ resmi.
-  `no_surat_jalan` varchar(300) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `status` enum('in_progress','completed') CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'in_progress',
   `started_at` datetime DEFAULT NULL,
   `completed_at` datetime DEFAULT NULL,
@@ -51,7 +51,6 @@ CREATE TABLE `driver_t_trip` (
   `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   KEY `driver_t_trip_driver_id_status_index` (`driver_id`,`status`),
-  KEY `driver_t_trip_no_surat_jalan_index` (`no_surat_jalan`),
   CONSTRAINT `fk_driver_t_trip_driver` FOREIGN KEY (`driver_id`) REFERENCES `driver_m_supir` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

@@ -3,7 +3,7 @@
 -- semua akun shared_m_users otomatis diperlakukan sebagai supir kalau tidak ada
 -- baris untuk user_id-nya di sini.
 --
--- Jalankan manual: mysql -u <user> -p <database_produksi> < seed_admin_access.sql
+-- Jalankan manual: mysql -u <user> -p <database_produksi> < database/02_seed_admin_access.sql
 -- Aman dijalankan berkali-kali (idempotent) -- username yang sudah terdaftar
 -- dilewati (ON DUPLICATE KEY UPDATE no-op), bukan bikin baris duplikat/error.
 

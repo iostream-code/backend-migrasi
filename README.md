@@ -2,7 +2,8 @@
 
 Backend khusus untuk [`driver-apk`](../driver-apk) (Cordova, tracking supir + monitor
 admin). **Slim 4, tanpa ORM, tanpa migration** — PDO + SQL mentah langsung, skema tabel
-didefinisikan di [`schema.sql`](schema.sql) dan dijalankan manual sekali. Project **terpisah**
+didefinisikan di [`database/`](database) (file bernomor urut, dijalankan manual sekali per
+file). Project **terpisah**
 dari `backend-production`, tapi **login pakai akun pegawai yang sama** (`shared_m_users`) dan
 tabel domainnya (`driver_*`) hidup di **database produksi yang sama** — cuma dikelola dari
 codebase ini.
@@ -25,11 +26,16 @@ punya pilihan lain selain SQL mentah.
 
 ## Arsitektur singkat
 
-- **Tanpa migration**: [`schema.sql`](schema.sql) berisi `CREATE TABLE` mentah, ditulis
-  mengikuti gaya persis tabel-tabel baru di `db_dump.sql` (`ENGINE=InnoDB`,
+- **Tanpa migration**: [`database/`](database) berisi `CREATE TABLE`/`ALTER`/seed mentah,
+  satu file per langkah, **bernomor urut sesuai urutan eksekusi** (`01_schema.sql`,
+  `02_seed_admin_access.sql`, dst — lihat isi folder untuk daftar lengkap & urutannya).
+  Ditulis mengikuti gaya persis tabel-tabel baru di `db_dump.sql` (`ENGINE=InnoDB`,
   `utf8mb4`/`utf8mb4_unicode_ci`, PK `id bigint unsigned AUTO_INCREMENT`, FK eksplisit —
-  termasuk FK ke `shared_m_users` karena sekarang satu database yang sama). Jalankan manual:
-  `mysql -u <user> -p <database> < schema.sql`. Tidak ada `php artisan migrate` atau sejenisnya.
+  termasuk FK ke `shared_m_users` karena sekarang satu database yang sama). Jalankan manual,
+  urut nomornya, satu-satu: `mysql -u <user> -p <database> < database/01_schema.sql`, dst.
+  Tidak ada `php artisan migrate`/runner apa pun — kalau nanti ada perubahan skema baru, tambah
+  file baru dengan nomor berikutnya (mis. `05_...sql`), jangan edit file yang sudah pernah
+  dijalankan.
 - **Tanpa ORM**: semua query pakai PDO + prepared statement langsung di tiap Controller
   (`src/Controllers/`). `src/Database.php` cuma wrapper koneksi PDO tipis (singleton).
 - **Auth JWT stateless** (`firebase/php-jwt`): `POST /login` cek `username`+`password` ke
@@ -71,28 +77,30 @@ JWT_SECRET=<string acak panjang, mis. `openssl rand -base64 48`>
 ```
 
 ```bash
-mysql -u <username> -p <database> < schema.sql   # bikin 5 tabel driver_* baru (TIDAK menyentuh tabel lain)
-php -S 127.0.0.1:8000 -t public                   # dev server
+mysql -u <username> -p <database> < database/01_schema.sql   # bikin 5 tabel driver_* baru (TIDAK menyentuh tabel lain)
+php -S 127.0.0.1:8000 -t public                                # dev server
 ```
 
 Lalu **seed minimal 1 admin** — tanpa ini tidak ada seorang pun yang bisa login sebagai
 admin/dispatcher (`driver_m_admin_access` mulai kosong). Edit dulu daftar `username` di
-[`seed_admin_access.sql`](seed_admin_access.sql), lalu:
+[`database/02_seed_admin_access.sql`](database/02_seed_admin_access.sql), lalu:
 
 ```bash
-mysql -u <username> -p <database> < seed_admin_access.sql
+mysql -u <username> -p <database> < database/02_seed_admin_access.sql
 ```
 
 Cari berdasarkan `username` (bukan `user_id` mentah) supaya tidak perlu lihat-lihat ID manual,
 dan aman dijalankan berkali-kali (idempotent) kalau nanti mau nambah admin lagi. Query
 terakhir di skrip itu langsung menampilkan siapa saja yang berhasil ke-seed, untuk verifikasi.
 
-**Belum pernah dites terhadap MySQL beneran** — sandbox tempat project ini dibuat tidak punya
-ekstensi `pdo_mysql` terpasang. Sudah divalidasi lewat: `php -l` di semua file, dan smoke test
-end-to-end pakai dev server (`php -S`) untuk jalur yang tidak butuh DB — routing, parsing body
-JSON, terbit & verifikasi token JWT, gerbang role admin (403 utk token role `driver`, lolos ke
-titik query DB utk token role `admin`), CORS preflight. Jalankan `schema.sql` + coba
-`POST /login` sungguhan di environment dev Anda sebelum dianggap final.
+Lanjutkan dengan sisa file `database/` sesuai nomor urutnya (`03_...`, `04_...`, dst) — lihat
+daftar lengkap & fungsi tiap file di bagian [Struktur](#struktur) di bawah.
+
+**Sudah dites end-to-end terhadap MySQL produksi asli** (bukan cuma sandbox dev) — login
+sungguhan (`POST /login` dgn kredensial `shared_m_users` real), query `shared_m_users` (331
+baris), seed admin (`ITAI`), `POST /admin/drivers` (bikin profil supir), dan
+`GET /admin/surat-jalan/{no}` (join ke `surat_jalan` produksi, dapat data client asli) semuanya
+sudah dicoba langsung & berhasil.
 
 ## Kontrak API
 
@@ -157,10 +165,11 @@ Kalau nanti mau dilanjutkan (auto-fill, atau tombol "Validasi CS" di app ini yan
 
 ```
 driver-apk-backend/
-├── schema.sql              # CREATE TABLE mentah -- jalankan manual, bukan migration
-├── seed_admin_access.sql    # seed whitelist admin/dispatcher (cari by username, idempotent)
-├── seed_dummy_drivers.sql    # pre-provision profil supir dummy (cari by username, idempotent)
-├── alter_add_no_surat_jalan_to_driver_t_trip.sql  # ALTER satu-kali, cuma perlu kalau schema.sql sudah pernah dijalankan sebelum kolom ini ada
+├── database/                 # SQL mentah, satu file per langkah, dijalankan manual URUT NOMOR
+│   ├── 01_schema.sql            # CREATE TABLE 5 tabel driver_* -- bukan migration, sekali jalan
+│   ├── 02_seed_admin_access.sql  # seed whitelist admin/dispatcher (cari by username, idempotent)
+│   ├── 03_seed_dummy_drivers.sql # pre-provision profil supir dummy (cari by username, idempotent)
+│   └── 04_alter_add_no_surat_jalan_to_driver_t_trip.sql  # ALTER: tambah driver_t_trip.no_surat_jalan
 ├── public/
 │   ├── index.php             # front controller
 │   └── uploads/trips/{id}/   # foto checkpoint, disajikan langsung sbg file statis

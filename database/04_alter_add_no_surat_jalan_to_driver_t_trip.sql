@@ -1,9 +1,9 @@
--- ALTER satu-kali: tambah kolom no_surat_jalan ke driver_t_trip (yang sudah
--- lebih dulu dibuat via schema.sql sebelum kolom ini ada). Kalau Anda baru
--- pertama kali menjalankan schema.sql (belum pernah dijalankan sebelumnya),
--- skrip ini TIDAK PERLU dijalankan -- schema.sql sudah termasuk kolom ini.
+-- ALTER satu-kali (langkah 4 dari database/): tambah kolom no_surat_jalan ke
+-- driver_t_trip. WAJIB dijalankan setelah 01_schema.sql -- 01 SENGAJA tidak
+-- menyertakan kolom ini (schema aslinya sebelum integrasi surat_jalan dibuat),
+-- jadi baik instalasi baru maupun lama sama-sama butuh menjalankan file ini.
 --
--- Jalankan manual: mysql -u <user> -p <database_produksi> < alter_add_no_surat_jalan_to_driver_t_trip.sql
+-- Jalankan manual: mysql -u <user> -p <database_produksi> < database/04_alter_add_no_surat_jalan_to_driver_t_trip.sql
 --
 -- Tautan LOGIS (bukan FOREIGN KEY sungguhan) ke surat_jalan.no_surat_jalan
 -- (tabel lama milik backend-production, TIDAK ikut diubah apa pun di sini).
