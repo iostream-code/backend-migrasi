@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Database;
+use App\Support\ExpedisiLookup;
 use App\Support\SpkReadyKirim;
 use App\Support\SupirProfile;
 use App\Support\SuratJalanLookup;
@@ -235,6 +236,69 @@ class AdminController extends Controller
             'no_surat_jalan' => $noSuratJalan ?: null,
             'penjualan_id' => $penjualanId ?: null,
             'status' => 'in_progress',
+        ], 201);
+    }
+
+    /**
+     * GET /admin/ekspedisi
+     * Daftar perusahaan ekspedisi aktif (READ-ONLY ke m_expedisi milik
+     * backend-production) -- dipakai dropdown pilih ekspedisi.
+     */
+    public function listEkspedisi(Request $request, Response $response): Response
+    {
+        return $this->json($response, ExpedisiLookup::listActive(Database::connection()));
+    }
+
+    /**
+     * POST /admin/ekspedisi
+     * Serahkan 1 SPK ke ekspedisi luar (pihak ketiga) -- bikin baris
+     * driver_t_ekspedisi. Paralel dengan createTrip() (plotting supir
+     * internal), tapi tidak terikat driver_m_supir sama sekali.
+     * body: { penjualan_id, id_expedisi, no_resi?, biaya_kirim?, catatan? }
+     */
+    public function createEkspedisi(Request $request, Response $response): Response
+    {
+        $pdo = Database::connection();
+        $body = (array) $request->getParsedBody();
+
+        $penjualanId = trim((string) ($body['penjualan_id'] ?? ''));
+        $idExpedisi = (int) ($body['id_expedisi'] ?? 0);
+
+        if ($penjualanId === '') {
+            return $this->error($response, 'penjualan_id wajib diisi.');
+        }
+        if (!SpkReadyKirim::find($pdo, $penjualanId)) {
+            return $this->error($response, 'SPK/penjualan_id tidak ditemukan, cek lagi penulisannya.');
+        }
+
+        $expedisi = ExpedisiLookup::find($pdo, $idExpedisi);
+        if (!$expedisi) {
+            return $this->error($response, 'Ekspedisi tidak ditemukan atau tidak aktif.');
+        }
+
+        $insert = $pdo->prepare(
+            "INSERT INTO driver_t_ekspedisi
+                (penjualan_id, id_expedisi, nama_expedisi, no_resi, biaya_kirim, catatan, status, tgl_kirim, created_by)
+             VALUES
+                (:penjualan_id, :id_expedisi, :nama_expedisi, :no_resi, :biaya_kirim, :catatan, 'dijadwalkan', :tgl_kirim, :created_by)"
+        );
+        $insert->execute([
+            'penjualan_id' => $penjualanId,
+            'id_expedisi' => $idExpedisi,
+            'nama_expedisi' => $expedisi['nama_expedisi'],
+            'no_resi' => !empty($body['no_resi']) ? trim((string) $body['no_resi']) : null,
+            'biaya_kirim' => $body['biaya_kirim'] ?? null,
+            'catatan' => !empty($body['catatan']) ? trim((string) $body['catatan']) : null,
+            'tgl_kirim' => date('Y-m-d H:i:s'),
+            'created_by' => (int) $request->getAttribute('user_id'),
+        ]);
+
+        return $this->json($response, [
+            'id' => (int) $pdo->lastInsertId(),
+            'penjualan_id' => $penjualanId,
+            'id_expedisi' => $idExpedisi,
+            'nama_expedisi' => $expedisi['nama_expedisi'],
+            'status' => 'dijadwalkan',
         ], 201);
     }
 }

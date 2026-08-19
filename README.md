@@ -123,7 +123,9 @@ frontend, cuma implementasi & auth mechanism-nya yang beda (Bearer JWT, tetap ta
 | GET | `/admin/drivers/{driver}` | token + admin | `{ id, name, phone, status, trips: [...] }` |
 | POST | `/admin/drivers/{driver}/trip` | token + admin | `{ destination, no_surat_jalan?, penjualan_id? }` — keduanya opsional, kalau diisi WAJIB cocok baris asli (lihat bagian Integrasi di bawah) |
 | GET | `/admin/surat-jalan/{no}` | token + admin | Cek 1 nomor SJ asli (READ-ONLY ke `surat_jalan` milik `backend-production`) → `{ no_surat_jalan, tanggal, kendaraan, plat, pengirim, valid_cs, penjualan_id, client_nama, client_alamat }`, 404 kalau tidak ketemu |
-| GET | `/admin/spk-ready-kirim` | token + admin | Daftar SPK yang sudah disetujui utk dikirim tapi belum diplot ke supir manapun (READ-ONLY ke `t_penjualan_header`) → `[{ penjualan_id, no_spk, client_nama, kota_asal, kota_tujuan, penjualan_tanggal_kirim, tgl_cs_deadline, penjualan_total_qty }]` |
+| GET | `/admin/spk-ready-kirim` | token + admin | Daftar SPK yang sudah disetujui utk dikirim tapi belum diplot ke supir/ekspedisi manapun (READ-ONLY ke `t_penjualan_header`) → `[{ penjualan_id, no_spk, client_nama, kota_asal, kota_tujuan, penjualan_tanggal_kirim, tgl_cs_deadline, penjualan_total_qty }]` |
+| GET | `/admin/ekspedisi` | token + admin | Daftar perusahaan ekspedisi aktif (READ-ONLY ke `m_expedisi`) → `[{ id_expedisi, kode_expedisi, nama_expedisi, pic, no_telp }]` |
+| POST | `/admin/ekspedisi` | token + admin | `{ penjualan_id, id_expedisi, no_resi?, biaya_kirim?, catatan? }` → 201. Serahkan 1 SPK ke ekspedisi luar — bikin baris `driver_t_ekspedisi`, paralel dgn `POST /admin/drivers/{driver}/trip` tapi tidak terikat supir manapun |
 
 `{driver}`/`{trip}` di URL adalah **id `driver_m_supir`/`driver_t_trip`** (bukan `user_id`
 `shared_m_users`).
@@ -194,12 +196,40 @@ diintegrasikan ke sini — `App\Support\SpkReadyKirim` di project ini query send
 sederhana, dikecualikan berdasar `driver_t_trip.penjualan_id`, bukan `t_pengiriman_detail`)
 supaya tidak bergantung pada sistem ekspedisi luar yang belum pernah hidup. Kalau nanti mau
 sekalian pakai jalur ekspedisi luar, itu scope terpisah — lihat histori git utk detail
-pertimbangannya.
+pertimbangannya. **(Update: jalur ekspedisi luar sekarang ADA, lihat subbagian di bawah —
+tapi tetap tabel driver_* sendiri, bukan menghidupkan sistem Ekspedisi backend-production yang
+disebut di atas.)**
 
 Yang sudah ada di sisi driver-apk: halaman **"SPK Siap Kirim"** (`adminSpkKirim.js`) — daftar
 SPK ready-kirim, admin pilih supir dari dropdown per baris, klik "Plot" langsung bikin
 `driver_t_trip` tertaut ke `penjualan_id` itu (destination di-compose otomatis dari
 `client_nama` + `kota_tujuan`).
+
+### Ekspedisi luar / pihak ketiga (`driver_t_ekspedisi`)
+
+Tabel baru **`driver_t_ekspedisi`** (`database/06_...sql`) — paralel dengan `driver_t_trip`,
+tapi utk SPK yang diserahkan ke ekspedisi luar (bukan supir internal). Satu SPK dari
+`SpkReadyKirim` ujungnya masuk ke `driver_t_trip` ATAU `driver_t_ekspedisi`, tidak dua-duanya
+— dicegah di level query (`SpkReadyKirim::list()` sekarang mengecualikan kedua tabel), bukan
+constraint DB.
+
+Kolom kunci: `penjualan_id` (tautan logis ke SPK, WAJIB diisi — beda dari `driver_t_trip` yang
+opsional), `id_expedisi` (tautan logis ke `m_expedisi.id_expedisi`), `nama_expedisi`
+(**snapshot**, bukan selalu di-JOIN ulang — supaya histori tetap benar walau nama ekspedisi
+diedit belakangan di `m_expedisi`), `no_resi`/`biaya_kirim`/`catatan` (diisi manual, `no_resi`
+biasanya belum ada di saat penyerahan), `status` (`dijadwalkan` → `dikirim`/`sampai`/`batal` —
+mengikuti gaya `t_pengiriman.status` di `backend-production` tapi TABEL SENDIRI, tidak
+menyentuh `t_pengiriman` yang memang belum pernah dipakai).
+
+`App\Support\ExpedisiLookup` — query READ-ONLY ke `m_expedisi`/`m_expedisi_tarif` (daftar
+ekspedisi aktif + tarif per rute kalau ada; `tarif()` sudah ada tapi belum disambungkan ke
+endpoint manapun — perkiraan biaya opsional utk dikerjakan belakangan kalau perlu).
+
+**Belum ada** (di luar scope "buatkan skema" sesi ini, tunggu keputusan lanjut): halaman admin
+utk memilih ekspedisi & submit `POST /admin/ekspedisi` (endpoint backend-nya sudah ada &
+sudah dites, tapi UI di `driver-apk` belum dibuat — saat ini cuma `driver_t_trip`/plotting
+supir yang punya UI, lewat `adminSpkKirim.js`), dan status lifecycle
+(`dikirim`/`sampai`/`batal`) belum ada endpoint utk diubah setelah baris dibuat.
 
 ## Struktur
 
@@ -210,7 +240,8 @@ driver-apk-backend/
 │   ├── 02_seed_admin_access.sql  # seed whitelist admin/dispatcher (cari by username, idempotent)
 │   ├── 03_seed_dummy_drivers.sql # pre-provision profil supir dummy (cari by username, idempotent)
 │   ├── 04_alter_add_no_surat_jalan_to_driver_t_trip.sql  # ALTER: tambah driver_t_trip.no_surat_jalan
-│   └── 05_add_penjualan_id_to_driver_t_trip.sql          # ALTER: tambah driver_t_trip.penjualan_id
+│   ├── 05_add_penjualan_id_to_driver_t_trip.sql          # ALTER: tambah driver_t_trip.penjualan_id
+│   └── 06_create_driver_t_ekspedisi.sql                  # CREATE TABLE driver_t_ekspedisi (jalur ekspedisi luar)
 ├── public/
 │   ├── index.php             # front controller
 │   └── uploads/trips/{id}/   # foto checkpoint, disajikan langsung sbg file statis
@@ -222,7 +253,8 @@ driver-apk-backend/
     │   ├── SupirProfile.php       # ambil/buat baris driver_m_supir (dipakai Auth & DriverController)
     │   ├── TripPresenter.php      # format baris driver_t_trip -> shape JSON, konstanta STEPS
     │   ├── SuratJalanLookup.php   # query READ-ONLY ke surat_jalan (integrasi, lihat bagian di atas)
-    │   └── SpkReadyKirim.php      # query READ-ONLY ke t_penjualan_header (integrasi SPK ready-kirim)
+    │   ├── SpkReadyKirim.php      # query READ-ONLY ke t_penjualan_header (integrasi SPK ready-kirim)
+    │   └── ExpedisiLookup.php     # query READ-ONLY ke m_expedisi/m_expedisi_tarif (integrasi ekspedisi luar)
     ├── Middleware/
     │   ├── AuthMiddleware.php      # cek Authorization: Bearer <token>, taruh user_id/role di request
     │   └── AdminOnlyMiddleware.php  # tolak 403 kalau role token bukan 'admin'
