@@ -6,6 +6,7 @@ namespace App\Controllers;
 
 use App\Database;
 use App\Support\ExpedisiLookup;
+use App\Support\PengajuanBiaya;
 use App\Support\SpkReadyKirim;
 use App\Support\SupirProfile;
 use App\Support\SuratJalanLookup;
@@ -24,11 +25,14 @@ class AdminController extends Controller
     {
         $pdo = Database::connection();
 
+        // LEFT JOIN (bukan JOIN) -- supir tipe='eksternal' tidak punya baris
+        // shared_m_users sama sekali, namanya diambil dari nama_eksternal.
         $stmt = $pdo->query(
-            'SELECT s.id, s.driver_status, s.last_lat, s.last_lng, s.last_ping_at, u.nama_lengkap
+            "SELECT s.id, s.tipe, s.driver_status, s.last_lat, s.last_lng, s.last_ping_at,
+                    COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama
              FROM driver_m_supir s
-             JOIN shared_m_users u ON u.user_id = s.user_id
-             ORDER BY u.nama_lengkap'
+             LEFT JOIN shared_m_users u ON u.user_id = s.user_id
+             ORDER BY nama"
         );
         $drivers = $stmt->fetchAll();
 
@@ -42,7 +46,8 @@ class AdminController extends Controller
 
             return [
                 'id' => (int) $driver['id'],
-                'name' => $driver['nama_lengkap'],
+                'tipe' => $driver['tipe'],
+                'name' => $driver['nama'],
                 'status' => $driver['driver_status'],
                 'lat' => $driver['last_lat'] !== null ? (float) $driver['last_lat'] : null,
                 'lng' => $driver['last_lng'] !== null ? (float) $driver['last_lng'] : null,
@@ -58,22 +63,28 @@ class AdminController extends Controller
 
     /**
      * POST /admin/drivers
-     * Tambah supir baru: cari akun pegawai di shared_m_users lewat username
-     * (supir TIDAK punya akun terpisah, sama seperti admin -- lihat AuthController),
-     * lalu pastikan ada profil driver_m_supir untuknya. Idempotent -- kalau pegawai
-     * itu sudah py profil supir, yang sudah ada dikembalikan apa adanya (bukan error).
-     * body: { username }
+     * Tambah supir baru -- INTERNAL (pegawai, cari akun di shared_m_users lewat
+     * username, sama seperti admin -- lihat AuthController) atau EKSTERNAL
+     * (bukan pegawai, tidak bisa login ke app ini sama sekali -- murni catatan
+     * dispatch, opsional ditautkan ke perusahaan ekspedisi dari m_expedisi).
+     * body internal:  { tipe: 'internal', username }
+     * body eksternal: { tipe: 'eksternal', nama, telepon?, id_expedisi? }
      */
     public function createDriver(Request $request, Response $response): Response
     {
+        $pdo = Database::connection();
         $body = (array) $request->getParsedBody();
-        $username = trim((string) ($body['username'] ?? ''));
+        $tipe = ($body['tipe'] ?? 'internal') === 'eksternal' ? 'eksternal' : 'internal';
 
+        if ($tipe === 'eksternal') {
+            return $this->createDriverEksternal($pdo, $response, $body);
+        }
+
+        $username = trim((string) ($body['username'] ?? ''));
         if ($username === '') {
             return $this->error($response, 'username wajib diisi.');
         }
 
-        $pdo = Database::connection();
         $stmt = $pdo->prepare(
             'SELECT user_id, nama_lengkap FROM shared_m_users WHERE username = :username AND user_active = 1 LIMIT 1'
         );
@@ -93,6 +104,38 @@ class AdminController extends Controller
             'id' => $driverId,
             'name' => $user['nama_lengkap'],
             'status' => $statusStmt->fetchColumn(),
+            'tipe' => 'internal',
+        ], 201);
+    }
+
+    private function createDriverEksternal(\PDO $pdo, Response $response, array $body): Response
+    {
+        $nama = trim((string) ($body['nama'] ?? ''));
+        $telepon = trim((string) ($body['telepon'] ?? ''));
+        $idExpedisi = !empty($body['id_expedisi']) ? (int) $body['id_expedisi'] : null;
+
+        if ($nama === '') {
+            return $this->error($response, 'Nama supir eksternal wajib diisi.');
+        }
+        if ($idExpedisi !== null && !ExpedisiLookup::find($pdo, $idExpedisi)) {
+            return $this->error($response, 'Perusahaan ekspedisi tidak ditemukan atau tidak aktif.');
+        }
+
+        $insert = $pdo->prepare(
+            "INSERT INTO driver_m_supir (tipe, nama_eksternal, telepon_eksternal, id_expedisi, driver_status)
+             VALUES ('eksternal', :nama, :telepon, :id_expedisi, 'offline')"
+        );
+        $insert->execute([
+            'nama' => $nama,
+            'telepon' => $telepon ?: null,
+            'id_expedisi' => $idExpedisi,
+        ]);
+
+        return $this->json($response, [
+            'id' => (int) $pdo->lastInsertId(),
+            'name' => $nama,
+            'status' => 'offline',
+            'tipe' => 'eksternal',
         ], 201);
     }
 
@@ -106,9 +149,11 @@ class AdminController extends Controller
         $driverId = (int) $args['driver'];
 
         $stmt = $pdo->prepare(
-            'SELECT s.id, s.driver_status, u.nama_lengkap, u.hp
+            'SELECT s.id, s.tipe, s.driver_status,
+                    COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama,
+                    COALESCE(u.hp, s.telepon_eksternal) AS hp
              FROM driver_m_supir s
-             JOIN shared_m_users u ON u.user_id = s.user_id
+             LEFT JOIN shared_m_users u ON u.user_id = s.user_id
              WHERE s.id = :id LIMIT 1'
         );
         $stmt->execute(['id' => $driverId]);
@@ -146,7 +191,8 @@ class AdminController extends Controller
 
         return $this->json($response, [
             'id' => (int) $driver['id'],
-            'name' => $driver['nama_lengkap'],
+            'tipe' => $driver['tipe'],
+            'name' => $driver['nama'],
             'phone' => $driver['hp'],
             'status' => $driver['driver_status'],
             'trips' => $trips,
@@ -242,7 +288,8 @@ class AdminController extends Controller
     /**
      * GET /admin/ekspedisi
      * Daftar perusahaan ekspedisi aktif (READ-ONLY ke m_expedisi milik
-     * backend-production) -- dipakai dropdown pilih ekspedisi.
+     * backend-production) -- dipakai dropdown "Perusahaan Ekspedisi" (opsional)
+     * saat Tambah Supir Eksternal.
      */
     public function listEkspedisi(Request $request, Response $response): Response
     {
@@ -250,55 +297,48 @@ class AdminController extends Controller
     }
 
     /**
-     * POST /admin/ekspedisi
-     * Serahkan 1 SPK ke ekspedisi luar (pihak ketiga) -- bikin baris
-     * driver_t_ekspedisi. Paralel dengan createTrip() (plotting supir
-     * internal), tapi tidak terikat driver_m_supir sama sekali.
-     * body: { penjualan_id, id_expedisi, no_resi?, biaya_kirim?, catatan? }
+     * POST /admin/trips/{trip}/pengajuan-biaya
+     * Admin mengajukan biaya ke finance utk 1 perjalanan (supir internal
+     * MAUPUN eksternal). nominal_diajukan SENGAJA input manual admin, bukan
+     * hasil hitungan sistem.
+     * body: { nominal_diajukan, keterangan? }
      */
-    public function createEkspedisi(Request $request, Response $response): Response
+    public function createPengajuanBiaya(Request $request, Response $response, array $args): Response
     {
         $pdo = Database::connection();
+        $tripId = (int) $args['trip'];
+
+        $exists = $pdo->prepare('SELECT 1 FROM driver_t_trip WHERE id = :id LIMIT 1');
+        $exists->execute(['id' => $tripId]);
+        if (!$exists->fetchColumn()) {
+            return $this->error($response, 'Perjalanan tidak ditemukan.', 404);
+        }
+
         $body = (array) $request->getParsedBody();
-
-        $penjualanId = trim((string) ($body['penjualan_id'] ?? ''));
-        $idExpedisi = (int) ($body['id_expedisi'] ?? 0);
-
-        if ($penjualanId === '') {
-            return $this->error($response, 'penjualan_id wajib diisi.');
-        }
-        if (!SpkReadyKirim::find($pdo, $penjualanId)) {
-            return $this->error($response, 'SPK/penjualan_id tidak ditemukan, cek lagi penulisannya.');
+        $nominal = isset($body['nominal_diajukan']) ? (float) $body['nominal_diajukan'] : 0.0;
+        if ($nominal <= 0) {
+            return $this->error($response, 'nominal_diajukan wajib diisi, harus lebih dari 0.');
         }
 
-        $expedisi = ExpedisiLookup::find($pdo, $idExpedisi);
-        if (!$expedisi) {
-            return $this->error($response, 'Ekspedisi tidak ditemukan atau tidak aktif.');
-        }
-
-        $insert = $pdo->prepare(
-            "INSERT INTO driver_t_ekspedisi
-                (penjualan_id, id_expedisi, nama_expedisi, no_resi, biaya_kirim, catatan, status, tgl_kirim, created_by)
-             VALUES
-                (:penjualan_id, :id_expedisi, :nama_expedisi, :no_resi, :biaya_kirim, :catatan, 'dijadwalkan', :tgl_kirim, :created_by)"
-        );
-        $insert->execute([
-            'penjualan_id' => $penjualanId,
-            'id_expedisi' => $idExpedisi,
-            'nama_expedisi' => $expedisi['nama_expedisi'],
-            'no_resi' => !empty($body['no_resi']) ? trim((string) $body['no_resi']) : null,
-            'biaya_kirim' => $body['biaya_kirim'] ?? null,
-            'catatan' => !empty($body['catatan']) ? trim((string) $body['catatan']) : null,
-            'tgl_kirim' => date('Y-m-d H:i:s'),
-            'created_by' => (int) $request->getAttribute('user_id'),
-        ]);
+        $keterangan = !empty($body['keterangan']) ? trim((string) $body['keterangan']) : null;
+        $id = PengajuanBiaya::create($pdo, $tripId, $nominal, $keterangan, (int) $request->getAttribute('user_id'));
 
         return $this->json($response, [
-            'id' => (int) $pdo->lastInsertId(),
-            'penjualan_id' => $penjualanId,
-            'id_expedisi' => $idExpedisi,
-            'nama_expedisi' => $expedisi['nama_expedisi'],
-            'status' => 'dijadwalkan',
+            'id' => $id,
+            'trip_id' => $tripId,
+            'nominal_diajukan' => $nominal,
+            'keterangan' => $keterangan,
+            'status' => 'diajukan',
         ], 201);
+    }
+
+    /**
+     * GET /admin/trips/{trip}/pengajuan-biaya
+     * Riwayat pengajuan biaya utk 1 perjalanan.
+     */
+    public function listPengajuanBiaya(Request $request, Response $response, array $args): Response
+    {
+        $pdo = Database::connection();
+        return $this->json($response, PengajuanBiaya::listForTrip($pdo, (int) $args['trip']));
     }
 }

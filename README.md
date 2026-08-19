@@ -118,14 +118,15 @@ frontend, cuma implementasi & auth mechanism-nya yang beda (Bearer JWT, tetap ta
 | GET | `/driver/trip/{trip}` | token | `{ id, destination, status, completed_steps, current_step_label }` |
 | POST | `/driver/trip/{trip}/photo` | token | multipart: `photo`, `type` (`berangkat`\|`serah_terima`\|`sj`), `lat`, `lng` |
 | POST | `/driver/trip/{trip}/complete` | token | — |
-| GET | `/admin/drivers` | token + admin | `[{ id, name, status, lat, lng, current_step_label }]` |
-| POST | `/admin/drivers` | token + admin | `{ username }` → `{ id, name, status }`, 201. Cari akun di `shared_m_users` lewat `username`, buat/pastikan profil `driver_m_supir`-nya ada (idempotent — kalau sudah py profil, yang lama dikembalikan apa adanya) |
-| GET | `/admin/drivers/{driver}` | token + admin | `{ id, name, phone, status, trips: [...] }` |
+| GET | `/admin/drivers` | token + admin | `[{ id, tipe, name, status, lat, lng, current_step_label }]` — `tipe`: `internal`\|`eksternal` |
+| POST | `/admin/drivers` | token + admin | Internal: `{ tipe: 'internal', username }` (idempotent, cari akun `shared_m_users`). Eksternal: `{ tipe: 'eksternal', nama, telepon?, id_expedisi? }` (bukan pegawai, tidak bisa login). → `{ id, name, status, tipe }`, 201 |
+| GET | `/admin/drivers/{driver}` | token + admin | `{ id, tipe, name, phone, status, trips: [...] }` |
 | POST | `/admin/drivers/{driver}/trip` | token + admin | `{ destination, no_surat_jalan?, penjualan_id? }` — keduanya opsional, kalau diisi WAJIB cocok baris asli (lihat bagian Integrasi di bawah) |
 | GET | `/admin/surat-jalan/{no}` | token + admin | Cek 1 nomor SJ asli (READ-ONLY ke `surat_jalan` milik `backend-production`) → `{ no_surat_jalan, tanggal, kendaraan, plat, pengirim, valid_cs, penjualan_id, client_nama, client_alamat }`, 404 kalau tidak ketemu |
 | GET | `/admin/spk-ready-kirim` | token + admin | Daftar SPK yang sudah disetujui utk dikirim tapi belum diplot ke supir/ekspedisi manapun (READ-ONLY ke `t_penjualan_header`) → `[{ penjualan_id, no_spk, client_nama, kota_asal, kota_tujuan, penjualan_tanggal_kirim, tgl_cs_deadline, penjualan_total_qty }]` |
-| GET | `/admin/ekspedisi` | token + admin | Daftar perusahaan ekspedisi aktif (READ-ONLY ke `m_expedisi`) → `[{ id_expedisi, kode_expedisi, nama_expedisi, pic, no_telp }]` |
-| POST | `/admin/ekspedisi` | token + admin | `{ penjualan_id, id_expedisi, no_resi?, biaya_kirim?, catatan? }` → 201. Serahkan 1 SPK ke ekspedisi luar — bikin baris `driver_t_ekspedisi`, paralel dgn `POST /admin/drivers/{driver}/trip` tapi tidak terikat supir manapun |
+| GET | `/admin/ekspedisi` | token + admin | Daftar perusahaan ekspedisi aktif (READ-ONLY ke `m_expedisi`) → `[{ id_expedisi, kode_expedisi, nama_expedisi, pic, no_telp }]` — dipakai dropdown opsional saat Tambah Supir Eksternal |
+| POST | `/admin/trips/{trip}/pengajuan-biaya` | token + admin | `{ nominal_diajukan, keterangan? }` → 201. `nominal_diajukan` input manual admin. Berlaku utk trip supir internal maupun eksternal |
+| GET | `/admin/trips/{trip}/pengajuan-biaya` | token + admin | Riwayat pengajuan biaya utk 1 trip → `[{ id, trip_id, nominal_diajukan, status, nominal_disetujui, catatan_finance, ... }]` |
 
 `{driver}`/`{trip}` di URL adalah **id `driver_m_supir`/`driver_t_trip`** (bukan `user_id`
 `shared_m_users`).
@@ -205,31 +206,44 @@ SPK ready-kirim, admin pilih supir dari dropdown per baris, klik "Plot" langsung
 `driver_t_trip` tertaut ke `penjualan_id` itu (destination di-compose otomatis dari
 `client_nama` + `kota_tujuan`).
 
-### Ekspedisi luar / pihak ketiga (`driver_t_ekspedisi`)
+### Ekspedisi luar / pihak ketiga (`driver_m_supir.tipe = 'eksternal'`)
 
-Tabel baru **`driver_t_ekspedisi`** (`database/06_...sql`) — paralel dengan `driver_t_trip`,
-tapi utk SPK yang diserahkan ke ekspedisi luar (bukan supir internal). Satu SPK dari
-`SpkReadyKirim` ujungnya masuk ke `driver_t_trip` ATAU `driver_t_ekspedisi`, tidak dua-duanya
-— dicegah di level query (`SpkReadyKirim::list()` sekarang mengecualikan kedua tabel), bukan
-constraint DB.
+**(Riwayat desain: percobaan pertama pakai tabel terpisah `driver_t_ekspedisi`, DIBATALKAN &
+di-drop di `08_drop_driver_t_ekspedisi.sql` — belum sempat ada data/UI. Diganti pendekatan di
+bawah, lebih sederhana: satu alur "supir" utk internal maupun eksternal.)**
 
-Kolom kunci: `penjualan_id` (tautan logis ke SPK, WAJIB diisi — beda dari `driver_t_trip` yang
-opsional), `id_expedisi` (tautan logis ke `m_expedisi.id_expedisi`), `nama_expedisi`
-(**snapshot**, bukan selalu di-JOIN ulang — supaya histori tetap benar walau nama ekspedisi
-diedit belakangan di `m_expedisi`), `no_resi`/`biaya_kirim`/`catatan` (diisi manual, `no_resi`
-biasanya belum ada di saat penyerahan), `status` (`dijadwalkan` → `dikirim`/`sampai`/`batal` —
-mengikuti gaya `t_pengiriman.status` di `backend-production` tapi TABEL SENDIRI, tidak
-menyentuh `t_pengiriman` yang memang belum pernah dipakai).
+`driver_m_supir` sekarang punya kolom `tipe` (`internal`/`eksternal`, `database/07_...sql`).
+Supir eksternal (bukan pegawai — freelance/lepas, atau bekerja utk perusahaan ekspedisi
+tertentu) **tidak punya akun `shared_m_users` sama sekali** — `user_id` NULL, `nama_eksternal`/
+`telepon_eksternal` diisi langsung, `id_expedisi` (tautan logis opsional ke `m_expedisi`)
+NULL kalau lepas/independen. Konsekuensi penting: **supir eksternal tidak bisa login ke app
+driver-apk sama sekali** — tidak ada kredensial, murni catatan dispatch buat admin. Checkpoint
+foto (`berangkat`/`serah_terima`/`sj`) di `driver_t_trip_photo` jadi tidak relevan utk trip
+tipe ini (tidak ada yang bisa upload dari sisi supir) — **belum ada keputusan** gimana
+menandai trip eksternal selesai tanpa checkpoint foto, masih gap terbuka.
 
-`App\Support\ExpedisiLookup` — query READ-ONLY ke `m_expedisi`/`m_expedisi_tarif` (daftar
-ekspedisi aktif + tarif per rute kalau ada; `tarif()` sudah ada tapi belum disambungkan ke
-endpoint manapun — perkiraan biaya opsional utk dikerjakan belakangan kalau perlu).
+Karena ini tetap `driver_m_supir` biasa, jalur yang SUDAH ADA otomatis berlaku: satu dropdown
+"pilih supir" di `adminSpkKirim.js` menampilkan internal & eksternal sekaligus, `POST
+/admin/drivers/{driver}/trip` sama persis dipakai untuk keduanya. Tidak ada endpoint/tabel
+terpisah lagi utk "serahkan ke ekspedisi".
 
-**Belum ada** (di luar scope "buatkan skema" sesi ini, tunggu keputusan lanjut): halaman admin
-utk memilih ekspedisi & submit `POST /admin/ekspedisi` (endpoint backend-nya sudah ada &
-sudah dites, tapi UI di `driver-apk` belum dibuat — saat ini cuma `driver_t_trip`/plotting
-supir yang punya UI, lewat `adminSpkKirim.js`), dan status lifecycle
-(`dikirim`/`sampai`/`batal`) belum ada endpoint utk diubah setelah baris dibuat.
+`App\Support\ExpedisiLookup` (tetap ada, tidak ikut di-drop) — query READ-ONLY ke
+`m_expedisi`/`m_expedisi_tarif`, sekarang dipakai `GET /admin/ekspedisi` buat dropdown opsional
+"Perusahaan Ekspedisi" saat Tambah Supir Eksternal. `tarif()` masih ada tapi belum disambungkan
+ke endpoint manapun.
+
+### Pengajuan biaya ke finance (`driver_t_pengajuan_biaya`)
+
+Tabel baru (`database/09_...sql`), **FK asli** ke `driver_t_trip` (bukan tautan logis — dua-
+duanya tabel milik app ini sendiri). Berlaku utk trip supir internal MAUPUN eksternal — admin
+input `nominal_diajukan` **manual** (bukan hasil hitungan sistem/tarif), opsional `keterangan`.
+Status `diajukan` → `disetujui`/`ditolak` (kolom `nominal_disetujui`, `catatan_finance`,
+`disetujui_oleh`, `disetujui_at` sudah disiapkan di skema).
+
+**Belum ada** (di luar scope sesi ini): endpoint approve/reject (siapa yang berperan sebagai
+"finance" di app ini belum diputuskan — role baru, atau admin yang sama?), dan UI di
+`driver-apk` utk submit pengajuan (backend `POST`/`GET /admin/trips/{trip}/pengajuan-biaya`
+sudah ada & siap dipakai, tinggal form-nya).
 
 ## Struktur
 
@@ -241,7 +255,10 @@ driver-apk-backend/
 │   ├── 03_seed_dummy_drivers.sql # pre-provision profil supir dummy (cari by username, idempotent)
 │   ├── 04_alter_add_no_surat_jalan_to_driver_t_trip.sql  # ALTER: tambah driver_t_trip.no_surat_jalan
 │   ├── 05_add_penjualan_id_to_driver_t_trip.sql          # ALTER: tambah driver_t_trip.penjualan_id
-│   └── 06_create_driver_t_ekspedisi.sql                  # CREATE TABLE driver_t_ekspedisi (jalur ekspedisi luar)
+│   ├── 06_create_driver_t_ekspedisi.sql                  # (DIBATALKAN, lihat 08) CREATE TABLE driver_t_ekspedisi
+│   ├── 07_alter_driver_m_supir_add_eksternal.sql         # ALTER: driver_m_supir.tipe + kolom supir eksternal
+│   ├── 08_drop_driver_t_ekspedisi.sql                    # DROP TABLE driver_t_ekspedisi (desain diganti 07)
+│   └── 09_create_driver_t_pengajuan_biaya.sql            # CREATE TABLE driver_t_pengajuan_biaya
 ├── public/
 │   ├── index.php             # front controller
 │   └── uploads/trips/{id}/   # foto checkpoint, disajikan langsung sbg file statis
@@ -254,7 +271,8 @@ driver-apk-backend/
     │   ├── TripPresenter.php      # format baris driver_t_trip -> shape JSON, konstanta STEPS
     │   ├── SuratJalanLookup.php   # query READ-ONLY ke surat_jalan (integrasi, lihat bagian di atas)
     │   ├── SpkReadyKirim.php      # query READ-ONLY ke t_penjualan_header (integrasi SPK ready-kirim)
-    │   └── ExpedisiLookup.php     # query READ-ONLY ke m_expedisi/m_expedisi_tarif (integrasi ekspedisi luar)
+    │   ├── ExpedisiLookup.php     # query READ-ONLY ke m_expedisi/m_expedisi_tarif (dropdown Tambah Supir Eksternal)
+    │   └── PengajuanBiaya.php     # create/list driver_t_pengajuan_biaya
     ├── Middleware/
     │   ├── AuthMiddleware.php      # cek Authorization: Bearer <token>, taruh user_id/role di request
     │   └── AdminOnlyMiddleware.php  # tolak 403 kalau role token bukan 'admin'

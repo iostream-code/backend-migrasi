@@ -97,7 +97,8 @@ $app->group('', function ($group) use ($auth, $driver, $admin) {
         $adminGroup->get('/admin/surat-jalan/{no}', [$admin, 'lookupSuratJalan']);
         $adminGroup->get('/admin/spk-ready-kirim', [$admin, 'spkReadyKirim']);
         $adminGroup->get('/admin/ekspedisi', [$admin, 'listEkspedisi']);
-        $adminGroup->post('/admin/ekspedisi', [$admin, 'createEkspedisi']);
+        $adminGroup->post('/admin/trips/{trip}/pengajuan-biaya', [$admin, 'createPengajuanBiaya']);
+        $adminGroup->get('/admin/trips/{trip}/pengajuan-biaya', [$admin, 'listPengajuanBiaya']);
     })->add(new AdminOnlyMiddleware());
 })->add(new AuthMiddleware());
 
