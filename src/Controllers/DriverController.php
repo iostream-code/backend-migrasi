@@ -6,6 +6,7 @@ namespace App\Controllers;
 
 use App\Database;
 use App\Support\SupirProfile;
+use App\Support\SuratJalan;
 use App\Support\TripPresenter;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -169,6 +170,13 @@ class DriverController extends Controller
             'lat' => $body['lat'] ?? null,
             'lng' => $body['lng'] ?? null,
         ]);
+
+        // Checkpoint "sj" jadi/melengkapi baris di modul surat jalan MILIK app
+        // ini sendiri (ekspedisi_t_surat_jalan) -- lihat App\Support\SuratJalan.
+        // Sama sekali TIDAK menyentuh tabel surat_jalan lama backend-production.
+        if ($type === 'sj') {
+            SuratJalan::upsertFromTripPhoto($pdo, $trip, (int) $trip['driver_id'], $relativePath);
+        }
 
         return $this->json($response, [
             'ok' => true,

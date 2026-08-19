@@ -140,6 +140,10 @@ frontend, cuma implementasi & auth mechanism-nya yang beda (Bearer JWT, tetap ta
 | GET | `/admin/ekspedisi` | token + admin | Daftar perusahaan ekspedisi aktif (READ-ONLY ke `m_expedisi`) → `[{ id_expedisi, kode_expedisi, nama_expedisi, pic, no_telp }]` — dipakai dropdown opsional saat Tambah Supir Eksternal |
 | POST | `/admin/trips/{trip}/pengajuan-biaya` | token + admin | `{ nominal_diajukan, keterangan? }` → 201. `nominal_diajukan` input manual admin. Berlaku utk trip supir internal maupun eksternal |
 | GET | `/admin/trips/{trip}/pengajuan-biaya` | token + admin | Riwayat pengajuan biaya utk 1 trip → `[{ id, trip_id, nominal_diajukan, status, nominal_disetujui, catatan_finance, ... }]` |
+| GET | `/admin/sj` | token + admin | Daftar surat jalan **milik app ini sendiri** (`ekspedisi_t_surat_jalan`, independen dari `surat_jalan` lama) — query opsional `?status=`/`?penjualan_id=` → `[{ id, no_surat_jalan, trip_id, penjualan_id, driver_id, nama_supir, tujuan, kendaraan, plat, jumlah_kirim, foto_surat_jalan, status, ... }]` |
+| POST | `/admin/sj` | token + admin | `{ trip_id?, penjualan_id?, driver_id?, tujuan?, kendaraan?, plat?, jumlah_kirim?, catatan? }` → 201. Bikin SJ manual, tidak harus terkait trip |
+| GET | `/admin/sj/{id}` | token + admin | Detail 1 SJ |
+| PUT | `/admin/sj/{id}` | token + admin | `{ tujuan?, kendaraan?, plat?, jumlah_kirim?, catatan? }` — lengkapi/koreksi field |
 
 `{driver}`/`{trip}` di URL adalah **id `ekspedisi_m_supir`/`ekspedisi_t_trip`** (bukan `user_id`
 `shared_m_users`). Route path-nya sendiri (`/driver/*`, `/admin/drivers`) sengaja TIDAK ikut
@@ -156,11 +160,13 @@ dipakai `surat-jalan-apk`/`produksi-apk`/`finance-apk`). Bukan FK asli karena
 `no_surat_jalan` **bukan kolom unik** di `surat_jalan` — 1 nomor SJ = banyak baris (1 baris
 per item produk dalam pengiriman itu).
 
-**Catatan buat rencana modul surat jalan ke depan**: ini tabel `surat_jalan` LAMA milik
-`backend-production`, dipakai LIVE oleh 3 app lain di luar workspace ekspedisi ini. Kalau nanti
-modul surat jalan benar-benar dipindah/dibangun di sini, perlu diputuskan dulu: pakai tabel lama
-ini (risiko coupling ke app lain), atau bikin skema `ekspedisi_t_surat_jalan` sendiri (duplikasi,
-tapi lebih aman/independen). Belum diputuskan — sengaja ditunda sampai scope-nya jelas.
+**Keputusan modul surat jalan (2026-08-19): SKEMA SENDIRI, independen.** Ini tabel
+`surat_jalan` LAMA milik `backend-production`, dipakai LIVE oleh 3 app lain di luar workspace
+ekspedisi ini — modul surat jalan yang dibangun di app ini (lihat subbagian
+`ekspedisi_t_surat_jalan` di bawah) SENGAJA tidak menulis ke tabel ini sama sekali, supaya
+tidak ada risiko coupling ke app lain yang masih live. Konsekuensinya: SJ yang dibuat lewat
+`surat-jalan-apk` (dkk) dan SJ yang dibuat lewat `ekspedisi-apk` hidup di 2 tempat terpisah,
+tidak otomatis nyambung satu sama lain.
 
 Yang sudah ada:
 - `App\Support\SuratJalanLookup` — query **READ-ONLY** (`surat_jalan` JOIN
@@ -264,6 +270,35 @@ diputuskan — role baru, atau admin yang sama?), dan UI di `ekspedisi-apk` utk 
 (backend `POST`/`GET /admin/trips/{trip}/pengajuan-biaya` sudah ada & siap dipakai, tinggal
 form-nya).
 
+### Modul surat jalan (`ekspedisi_t_surat_jalan`)
+
+Tabel MILIK app ini sendiri (`database/04_...sql`) — **independen total** dari `surat_jalan`
+lama (lihat keputusan di bagian atas). Dua jalur pengisian:
+
+1. **Otomatis dari checkpoint foto.** Saat supir upload foto checkpoint `type=sj`
+   (`POST /driver/trip/{trip}/photo`, workflow yang sudah ada), `DriverController::uploadPhoto()`
+   sekalian memanggil `SuratJalan::upsertFromTripPhoto()` — bikin (atau update, kalau re-upload)
+   baris di `ekspedisi_t_surat_jalan` tertaut ke `trip_id` itu, `driver_id`/`tujuan`/`penjualan_id`
+   diisi otomatis dari data trip, `status` langsung `terkirim`. Supir tidak perlu tahu/lihat
+   modul SJ ini sama sekali — murni efek samping otomatis dari alur checkpoint yang sudah ada.
+2. **Manual dari admin.** `POST /admin/sj` (`SuratJalanController::store()`) — admin bikin SJ
+   langsung tanpa trip (`trip_id` NULL), isi semua field sendiri. `status` mulai dari `draft`
+   (belum ada foto) sampai admin/proses lain mengisi `foto_surat_jalan`.
+
+`no_surat_jalan` **auto-generated** setelah insert (format `SJ-YYYYMMDD-xxxx`, `xxxx` = id
+dipadding 4 digit) — `App\Support\SuratJalan::assignNomor()`, dipanggil dari `create()` maupun
+`upsertFromTripPhoto()`. `PUT /admin/sj/{id}` buat admin melengkapi/koreksi field (mis. SJ yang
+auto-dibuat dari checkpoint biasanya minim data — `kendaraan`/`plat`/`jumlah_kirim` belum
+terisi, admin lengkapi belakangan).
+
+FK ke `ekspedisi_t_trip`/`ekspedisi_m_supir` **FK asli** (tabel sendiri). `penjualan_id` tautan
+LOGIS ke `t_penjualan_header.penjualan_id` (backend-production), pola sama seperti
+`ekspedisi_t_trip.penjualan_id`.
+
+**Belum ada**: UI edit (backend `PUT` sudah siap, belum ada form-nya di `ekspedisi-apk`), dan
+belum ada validasi/approval apa pun atas SJ ini (beda dari `valid_cs` milik `surat_jalan` lama
+— modul ini sengaja dibuat sesederhana mungkin dulu, cuma pencatatan).
+
 ## Struktur
 
 ```
@@ -271,7 +306,8 @@ ekspedisi-apk-backend/
 ├── database/                 # SQL mentah, satu file per langkah, dijalankan manual URUT NOMOR
 │   ├── 01_schema.sql            # CREATE TABLE 6 tabel ekspedisi_* -- konsolidasi bersih, bukan migration
 │   ├── 02_seed_admin_access.sql  # seed whitelist admin/dispatcher (cari by username, idempotent)
-│   └── 03_seed_dummy_drivers.sql # pre-provision profil supir INTERNAL dummy (cari by username, idempotent)
+│   ├── 03_seed_dummy_drivers.sql # pre-provision profil supir INTERNAL dummy (cari by username, idempotent)
+│   └── 04_create_ekspedisi_t_surat_jalan.sql # CREATE TABLE modul surat jalan MILIK app ini (lihat bagian di atas)
 ├── public/
 │   ├── index.php             # front controller
 │   └── uploads/trips/{id}/   # foto checkpoint, disajikan langsung sbg file statis
@@ -285,7 +321,8 @@ ekspedisi-apk-backend/
     │   ├── SuratJalanLookup.php   # query READ-ONLY ke surat_jalan (integrasi, lihat bagian di atas)
     │   ├── SpkReadyKirim.php      # query READ-ONLY ke t_penjualan_header (integrasi SPK ready-kirim)
     │   ├── ExpedisiLookup.php     # query READ-ONLY ke m_expedisi/m_expedisi_tarif (dropdown Tambah Supir Eksternal)
-    │   └── PengajuanBiaya.php     # create/list ekspedisi_t_pengajuan_biaya
+    │   ├── PengajuanBiaya.php     # create/list ekspedisi_t_pengajuan_biaya
+    │   └── SuratJalan.php         # CRUD ekspedisi_t_surat_jalan (modul surat jalan MILIK app ini)
     ├── Middleware/
     │   ├── AuthMiddleware.php      # cek Authorization: Bearer <token>, taruh user_id/role di request
     │   └── AdminOnlyMiddleware.php  # tolak 403 kalau role token bukan 'admin'
@@ -293,7 +330,8 @@ ekspedisi-apk-backend/
         ├── Controller.php     # helper json()/error() dipakai semua controller
         ├── AuthController.php  # login, logout
         ├── DriverController.php  # /driver/* (nama class dipertahankan -- soal "supir", bukan bagian rename ekspedisi_*)
-        └── AdminController.php   # /admin/*
+        ├── AdminController.php   # /admin/*
+        └── SuratJalanController.php # /admin/sj* (modul surat jalan MILIK app ini)
 ```
 
 ## Yang belum ada / perlu diputuskan ke depan

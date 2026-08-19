@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Controllers\AdminController;
 use App\Controllers\AuthController;
 use App\Controllers\DriverController;
+use App\Controllers\SuratJalanController;
 use App\Database;
 use App\Middleware\AdminOnlyMiddleware;
 use App\Middleware\AuthMiddleware;
@@ -52,10 +53,11 @@ $errorMiddleware->setDefaultErrorHandler(function (
 $auth = new AuthController();
 $driver = new DriverController();
 $admin = new AdminController();
+$suratJalan = new SuratJalanController();
 
 $app->post('/login', [$auth, 'login']);
 
-$app->group('', function ($group) use ($auth, $driver, $admin) {
+$app->group('', function ($group) use ($auth, $driver, $admin, $suratJalan) {
     $group->post('/logout', [$auth, 'logout']);
 
     // Dipertahankan untuk kompatibilitas kontrak lama (driver-apk versi awal
@@ -89,7 +91,7 @@ $app->group('', function ($group) use ($auth, $driver, $admin) {
     $group->post('/driver/trip/{trip}/complete', [$driver, 'completeTrip']);
 
     // --- Admin / Dispatcher (digerbangi AdminOnlyMiddleware juga) ---
-    $group->group('', function ($adminGroup) use ($admin) {
+    $group->group('', function ($adminGroup) use ($admin, $suratJalan) {
         $adminGroup->get('/admin/drivers', [$admin, 'drivers']);
         $adminGroup->post('/admin/drivers', [$admin, 'createDriver']);
         $adminGroup->get('/admin/drivers/{driver}', [$admin, 'driverDetail']);
@@ -99,6 +101,12 @@ $app->group('', function ($group) use ($auth, $driver, $admin) {
         $adminGroup->get('/admin/ekspedisi', [$admin, 'listEkspedisi']);
         $adminGroup->post('/admin/trips/{trip}/pengajuan-biaya', [$admin, 'createPengajuanBiaya']);
         $adminGroup->get('/admin/trips/{trip}/pengajuan-biaya', [$admin, 'listPengajuanBiaya']);
+
+        // --- Modul surat jalan MILIK app ini (ekspedisi_t_surat_jalan) ---
+        $adminGroup->get('/admin/sj', [$suratJalan, 'index']);
+        $adminGroup->post('/admin/sj', [$suratJalan, 'store']);
+        $adminGroup->get('/admin/sj/{id}', [$suratJalan, 'show']);
+        $adminGroup->put('/admin/sj/{id}', [$suratJalan, 'update']);
     })->add(new AdminOnlyMiddleware());
 })->add(new AuthMiddleware());
 
