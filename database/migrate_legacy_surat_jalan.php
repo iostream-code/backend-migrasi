@@ -112,11 +112,36 @@ $insertItem = $pdo->prepare(
 $pdo->beginTransaction();
 $countHeader = 0;
 $countItem = 0;
+$countItemSkipped = 0;
+$countQtyNulled = 0;
 
 try {
     foreach ($toMigrate as $noSuratJalan) {
         $lines = $groups[$noSuratJalan];
         $first = $lines[0];
+
+        // Sebagian baris surat_jalan lama ternyata punya jumlah_kirim NULL
+        // (kolomnya nullable di skema lama, beda dari ekspedisi_t_surat_jalan_item
+        // yang NOT NULL) -- diisi 0, BUKAN dilewati, supaya baris & fotonya
+        // tetap tercatat (dihitung & dilaporkan di akhir biar kelihatan).
+        // penjualan_detail_performa_id (FK-ish, WAJIB) beda kasus -- kalau NULL,
+        // baris itu tidak bisa jadi item apa pun, jadi DILEWATI (bukan diisi 0).
+        $validLines = [];
+        foreach ($lines as $line) {
+            if ($line['penjualan_detail_performa_id'] === null) {
+                $countItemSkipped++;
+                continue;
+            }
+            if ($line['jumlah_kirim'] === null) {
+                $line['jumlah_kirim'] = 0;
+                $countQtyNulled++;
+            }
+            $validLines[] = $line;
+        }
+        if (!$validLines) {
+            continue; // semua baris di grup ini tidak punya penjualan_detail_performa_id -- lewati seluruh dokumen
+        }
+        $lines = $validLines;
 
         $jumlahKirim = array_sum(array_column($lines, 'jumlah_kirim'));
         $pengirimList = array_values(array_unique(array_filter(array_column($lines, 'pengirim'))));
@@ -164,6 +189,12 @@ try {
     } else {
         $pdo->commit();
         printf("Selesai: %d SJ header + %d baris item dimigrasi.\n", $countHeader, $countItem);
+    }
+    if ($countQtyNulled) {
+        printf("Catatan: %d baris item punya jumlah_kirim NULL di data lama, diisi 0.\n", $countQtyNulled);
+    }
+    if ($countItemSkipped) {
+        printf("Catatan: %d baris surat_jalan lama DILEWATI (penjualan_detail_performa_id NULL, tidak bisa jadi item).\n", $countItemSkipped);
     }
 } catch (Throwable $e) {
     $pdo->rollBack();
