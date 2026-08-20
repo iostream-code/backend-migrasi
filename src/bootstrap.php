@@ -127,6 +127,10 @@ $app->group('', function ($group) use ($auth, $driver, $admin, $suratJalan, $eks
 
         // --- Modul surat jalan MILIK app ini (ekspedisi_t_surat_jalan) ---
         $adminGroup->get('/admin/sj/spk/{penjualan_id}/items', [$suratJalan, 'spkItems']);
+        // WAJIB didaftarkan SEBELUM '/admin/sj/{id}' -- segmen sama-sama 1 kata
+        // (/admin/sj/years vs /admin/sj/{id}), kalau kebalik "years" ketangkep
+        // sbg id (bukan literal), lihat pola yg sama di main.js FE utk /admin/sj/new.
+        $adminGroup->get('/admin/sj/years', [$suratJalan, 'years']);
         $adminGroup->get('/admin/sj', [$suratJalan, 'index']);
         $adminGroup->post('/admin/sj', [$suratJalan, 'store']);
         $adminGroup->get('/admin/sj/{id}', [$suratJalan, 'show']);

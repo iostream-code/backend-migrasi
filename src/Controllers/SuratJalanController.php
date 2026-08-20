@@ -32,6 +32,17 @@ class SuratJalanController extends Controller
     }
 
     /**
+     * GET /admin/sj/years
+     * Daftar tahun yang benar ada di data (bukan range hardcode) -- lihat
+     * App\Support\SuratJalan::availableYears(), dipakai ngisi dropdown filter
+     * tahun di tab "SJ" FE (sejajar kotak cari).
+     */
+    public function years(Request $request, Response $response): Response
+    {
+        return $this->json($response, SuratJalan::availableYears(Database::connection()));
+    }
+
+    /**
      * GET /admin/sj/{id}
      */
     public function show(Request $request, Response $response, array $args): Response

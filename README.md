@@ -700,6 +700,16 @@ ekspedisi-apk-backend/
         └── ConfigController.php   # /config/check-version (cek versi app, lihat bagian "Cek versi app" di bawah)
 ```
 
+## Filter tahun `GET /admin/sj` (2026-08-20)
+
+`SuratJalan::list()` terima query param `tahun` opsional -- filter `YEAR(COALESCE(sj.tgl_kirim,
+sj.created_at)) = :tahun` (fallback ke `created_at` krn `tgl_kirim` nullable, supaya baris tanpa
+tanggal kirim tetap kena tepat 1 tahun, bukan hilang dari semua filter). `GET /admin/sj/years`
+(`SuratJalan::availableYears()`) balikin daftar tahun yang BENERAN ADA di data (`SELECT DISTINCT
+YEAR(...)`, bukan range hardcode) -- dipakai isi dropdown filter tahun di FE (`ekspedisi-apk`,
+tab "SJ", sejajar kotak cari). Route ini WAJIB didaftarkan di `bootstrap.php` SEBELUM `GET
+/admin/sj/{id}` (segmen path sama-sama 1 kata, kalau kebalik "years" ketangkep sbg `{id}`).
+
 ## Cek versi app (2026-08-20)
 
 Pola yang SAMA dipakai app lain di workspace ini (`absensi-apk`, `finance-apk`, `admin-finance-apk`,

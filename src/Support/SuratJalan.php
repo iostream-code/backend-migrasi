@@ -16,9 +16,13 @@ use PDO;
 class SuratJalan
 {
     /**
-     * $filters: status?, penjualan_id?, q? (cari no_surat_jalan/tujuan/penerima/
-     * nama supir/nomor SPK yang disentuh -- lihat EXISTS ke item di bawah),
-     * page? (default 1), per_page? (default 20, maks 100).
+     * $filters: status?, penjualan_id?, tahun? (filter YEAR(COALESCE(tgl_kirim,
+     * created_at)) -- tgl_kirim dipakai kalau ada krn itu yang tampil di kolom
+     * "Dikirim", fallback ke created_at kalau tgl_kirim NULL, supaya baris tanpa
+     * tgl_kirim tetap kena 1 tahun tertentu, bukan hilang dari SEMUA filter
+     * tahun), q? (cari no_surat_jalan/tujuan/penerima/nama supir/nomor SPK yang
+     * disentuh -- lihat EXISTS ke item di bawah), page? (default 1), per_page?
+     * (default 20, maks 100).
      * Return: { data, total, page, per_page } -- 2026-08-20, dulu array polos,
      * digantt krn tabel ini bisa py ribuan baris stlh migrate_legacy_surat_jalan.php,
      * fetch semua sekaligus tanpa batas jadi berat. total dipakai frontend
@@ -36,6 +40,10 @@ class SuratJalan
         if (!empty($filters['penjualan_id'])) {
             $where[] = 'sj.penjualan_id = :penjualan_id';
             $params['penjualan_id'] = $filters['penjualan_id'];
+        }
+        if (!empty($filters['tahun'])) {
+            $where[] = 'YEAR(COALESCE(sj.tgl_kirim, sj.created_at)) = :tahun';
+            $params['tahun'] = (int) $filters['tahun'];
         }
         if (!empty($filters['q'])) {
             // Placeholder :q dipakai 6x di query yang sama -- PDO native prepares
@@ -115,6 +123,25 @@ class SuratJalan
         $row = $stmt->fetch();
 
         return $row ?: null;
+    }
+
+    /**
+     * Daftar tahun yang BENERAN ADA di data (bukan range hardcode) -- dipakai
+     * ngisi pilihan filter tahun di tab "SJ" FE. Sama COALESCE(tgl_kirim,
+     * created_at) dgn filter di list() di atas, biar konsisten (tahun yang
+     * ditawarkan di dropdown dijamin selalu punya >=1 baris kalau dipilih).
+     * Data migrate_legacy_surat_jalan.php bisa mundur beberapa tahun -- JANGAN
+     * diganti ke range hardcode (mis. "3 tahun terakhir"), sempat dicek
+     * langsung ke produksi (2026-08-20) hasilnya 2024/2025/2026, tapi tidak
+     * boleh diasumsikan tetap 3 kalau nanti ada migrasi data lama lagi.
+     */
+    public static function availableYears(PDO $pdo): array
+    {
+        return $pdo->query(
+            'SELECT DISTINCT YEAR(COALESCE(tgl_kirim, created_at)) AS tahun
+             FROM ekspedisi_t_surat_jalan
+             ORDER BY tahun DESC'
+        )->fetchAll(PDO::FETCH_COLUMN);
     }
 
     /**
