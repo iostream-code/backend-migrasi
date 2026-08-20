@@ -17,6 +17,13 @@ use PDO;
  * (tabel baru milik app ini) -- supaya tidak dobel kirim kalau 1 SPK yang
  * sama pernah/sedang dikirim lewat KEDUA app itu. Ini query READ-ONLY, tidak
  * pernah menulis balik ke surat_jalan.
+ *
+ * Sisi `ekspedisi_t_surat_jalan_item` SENGAJA cuma hitung baris dari SJ
+ * ber-`asal='native'` (lihat database/09_tambah_kolom_asal_surat_jalan.sql &
+ * migrate_legacy_surat_jalan.php) -- baris hasil migrasi data historis
+ * (`asal='migrasi_legacy'`) sudah kehitung lewat sisi `surat_jalan` di atas
+ * (itu justru SUMBER datanya sebelum dimigrasi), jadi kalau ikut dihitung
+ * lagi di sini jadi DOBEL & sisa qty keliru (lebih kecil dari seharusnya).
  */
 class PenjualanItemLookup
 {
@@ -29,8 +36,11 @@ class PenjualanItemLookup
                  FROM surat_jalan GROUP BY penjualan_detail_performa_id
              ) legacy ON legacy.penjualan_detail_performa_id = pdp.penjualan_detail_performa_id
              LEFT JOIN (
-                 SELECT penjualan_detail_performa_id, SUM(jumlah_kirim) AS total
-                 FROM ekspedisi_t_surat_jalan_item GROUP BY penjualan_detail_performa_id
+                 SELECT sji.penjualan_detail_performa_id, SUM(sji.jumlah_kirim) AS total
+                 FROM ekspedisi_t_surat_jalan_item sji
+                 JOIN ekspedisi_t_surat_jalan sj ON sj.id = sji.surat_jalan_id
+                 WHERE sj.asal = 'native'
+                 GROUP BY sji.penjualan_detail_performa_id
              ) eks ON eks.penjualan_detail_performa_id = pdp.penjualan_detail_performa_id";
 
     /**

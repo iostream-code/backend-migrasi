@@ -143,7 +143,7 @@ frontend, cuma implementasi & auth mechanism-nya yang beda (Bearer JWT, tetap ta
 | POST | `/admin/trips/{trip}/pengajuan-biaya` | token + admin | `{ nominal_diajukan, keterangan? }` → 201. `nominal_diajukan` input manual admin. Berlaku utk trip supir internal maupun eksternal |
 | GET | `/admin/trips/{trip}/pengajuan-biaya` | token + admin | Riwayat pengajuan biaya utk 1 trip → `[{ id, trip_id, nominal_diajukan, status, nominal_disetujui, catatan_finance, ... }]` |
 | GET | `/admin/sj/spk/{penjualan_id}/items` | token + admin | Lini produk 1 SPK + sisa qty yang belum terkirim (READ-ONLY, lihat `App\Support\PenjualanItemLookup`) → `[{ penjualan_detail_performa_id, penjualan_jenis, penjualan_qty, terkirim, sisa }]`, 404 kalau SPK tidak ditemukan |
-| GET | `/admin/sj` | token + admin | Daftar surat jalan **milik app ini sendiri** (`ekspedisi_t_surat_jalan`, independen dari `surat_jalan` lama) — query opsional `?status=`/`?penjualan_id=` → `[{ id, no_surat_jalan, trip_id, penjualan_id, driver_id, nama_supir, tujuan, kendaraan, plat, penerima, jumlah_kirim, items: [{ penjualan_detail_performa_id, penjualan_id, penjualan_jenis, jumlah_kirim }], foto_surat_jalan, status, ... }]` — `penjualan_id` di level item beda-beda kalau SJ ini lintas SPK, header `penjualan_id` cuma keisi jalur trip-linked lama |
+| GET | `/admin/sj` | token + admin | Daftar surat jalan **milik app ini sendiri** (`ekspedisi_t_surat_jalan`, independen dari `surat_jalan` lama) — query opsional `?status=`/`?penjualan_id=` → `[{ id, no_surat_jalan, trip_id, penjualan_id, driver_id, nama_supir, tujuan, kendaraan, plat, penerima, jumlah_kirim, asal, items: [{ penjualan_detail_performa_id, penjualan_id, penjualan_jenis, jumlah_kirim }], foto_surat_jalan, status, ... }]` — `penjualan_id` di level item beda-beda kalau SJ ini lintas SPK, header `penjualan_id` cuma keisi jalur trip-linked lama. `asal` = `native`/`migrasi_legacy` (lihat "Migrasi data historis" di bawah) |
 | POST | `/admin/sj` | token + admin | `{ trip_id?, driver_id (WAJIB), tujuan?, kendaraan?, plat?, penerima?, jumlah_kirim?, tgl_kirim?, catatan?, items?: [{ penjualan_detail_performa_id, jumlah_kirim }] }` → 201, 422 kalau `driver_id` kosong. Bikin SJ manual, tidak harus terkait trip. `items` BOLEH berisi lini produk dari beberapa SPK berbeda sekaligus (tidak ada `penjualan_id` di body lagi — SPK-nya diketahui per-item). Kalau `items` diisi, `jumlah_kirim` dihitung otomatis dari total item & tiap item divalidasi ulang satu-satu ke sisa qty terkini (422 kalau melebihi) |
 | GET | `/admin/sj/{id}` | token + admin | Detail 1 SJ |
 | PUT | `/admin/sj/{id}` | token + admin | `{ tujuan?, kendaraan?, plat?, penerima?, jumlah_kirim?, tgl_kirim?, catatan? }` — lengkapi/koreksi field (foto TIDAK lewat sini, lihat endpoint di bawah) |
@@ -405,6 +405,53 @@ Konsekuensinya:
 mana pun (mis. sampel, transfer internal antar gudang). Jangan tambah SPK apa pun di form,
 `jumlah_kirim` manual seperti sebelumnya.
 
+#### Migrasi data historis `surat_jalan` (2026-08-20)
+
+Ditelusuri dari `db_dump.sql`: `surat_jalan` (tabel lama, masih live) punya 6.027 baris total,
+**3.160 di antaranya bertanggal ≥ 2024-01-01** (jadi 1.508 dokumen SJ unik kalau digrupkan by
+`no_surat_jalan`). Struktur legacy cocok — 1 baris = 1 lini produk, persis pola
+`ekspedisi_t_surat_jalan_item`, tinggal `GROUP BY no_surat_jalan` jadi header+item.
+
+**Risiko utama yang HARUS ditangani lebih dulu:** `PenjualanItemLookup` menghitung sisa qty dari
+DUA sumber — `surat_jalan` (dibaca langsung) DAN `ekspedisi_t_surat_jalan_item`. Kalau data yang
+sama disalin ke `ekspedisi_t_surat_jalan_item` tanpa penanda apa-apa, tiap baris kehitung DUA
+KALI dan sisa qty jadi keliru (lebih kecil dari seharusnya). **Solusi:** kolom baru
+`ekspedisi_t_surat_jalan.asal` (`database/09_tambah_kolom_asal_surat_jalan.sql`, enum
+`native`/`migrasi_legacy`, default `native`) — sisi `ekspedisi_t_surat_jalan_item` di
+`PenjualanItemLookup::BASE_SELECT` sekarang JOIN ke header & filter `WHERE sj.asal = 'native'`,
+jadi baris migrasi TIDAK ikut dihitung di sisi itu (sudah cukup terwakili lewat sisi
+`surat_jalan` yang memang jadi sumber datanya). **Efek bersih migrasi ini ke perhitungan sisa
+qty: NOL** — sisi `surat_jalan` sudah dibaca sejak awal (independen dari migrasi ini),
+migrasinya cuma soal punya riwayat yang seragam & bisa dilihat dari tab SJ app ini.
+
+**`database/migrate_legacy_surat_jalan.php`** (script PHP, BUKAN bagian urutan skema
+01–09 — operasi DATA sekali-jalan, wajib jalan SETELAH migration 09 di atas):
+```bash
+php database/migrate_legacy_surat_jalan.php --dry-run          # preview, tidak nulis apa-apa
+php database/migrate_legacy_surat_jalan.php --since=2024-01-01 # default -- ganti kalau perlu
+```
+Idempotent (aman diulang — skip `no_surat_jalan` yang sudah pernah bertanda
+`asal='migrasi_legacy'`; `UNIQUE KEY` di `no_surat_jalan` jadi pengaman kedua), 1 transaksi utk
+semua baris (gagal di tengah = rollback total, tidak ada state setengah-jadi). Per
+`no_surat_jalan`: `no_surat_jalan` ASLI dipertahankan (bukan digenerate ulang), `status`
+diseragamkan `terkirim` (data lama tidak punya info andal yang bisa dipetakan ke
+draft/tervalidasi — `valid_cs` di dump ini seragam `1` semua). Dua keputusan lain yang
+lossy-tapi-disengaja:
+- **`driver_id` tetap NULL** — kolom `pengirim` di data lama cuma teks bebas (465 nilai unik
+  gaya `"Yoyo (diambil)"`/`"Haer/gojek"`), tidak match andal ke `ekspedisi_m_supir` manapun.
+  Nilai aslinya disimpan di `catatan` (**bukan** dipetakan ke `penerima` — beda arti, `penerima`
+  = PIC di tujuan, bukan nama pengirim/kurir).
+- **`foto_surat_jalan` diisi URL ABSOLUT** ke host lama
+  (`https://indokoper.com/foto_surat_jalan/{filename}`, 95% baris py nama file valid) — TIDAK
+  disalin fisik ke `public/uploads/` app ini. Frontend (`adminSuratJalan.js`, `fotoUrl()`) sudah
+  disesuaikan biar bisa nampilin URL absolut apa adanya (dites langsung, foto beneran kebuka
+  dari host lama).
+
+Diverifikasi manual (2026-08-20): query SELECT+GROUP BY dijalankan terhadap database produksi
+asli (bukan cuma dump offline) — 3.160 baris → 1.508 dokumen, angka konsisten dengan hitungan
+dari `db_dump.sql`. Bagian INSERT belum dieksekusi di produksi (nunggu migration 09 dijalankan
+dulu oleh operator, sesuai konvensi "jalankan manual" di `database/`).
+
 #### Alur validasi (2026-08-19)
 
 Proses fisik yang dimodelkan: admin bikin SJ (`draft`) → dokumen fisik dibawa supir → barang
@@ -444,7 +491,9 @@ ekspedisi-apk-backend/
 │   ├── 05_alter_surat_jalan_pengirim_tgl_kirim.sql # ALTER tambah kolom pengirim & tgl_kirim (lihat bagian di atas)
 │   ├── 06_alter_surat_jalan_validasi.sql # ALTER tambah status 'tervalidasi' + foto_validasi/divalidasi_oleh/divalidasi_at
 │   ├── 07_create_ekspedisi_t_surat_jalan_item.sql # CREATE TABLE breakdown per lini produk SPK (lihat bagian di atas)
-│   └── 08_rename_pengirim_ke_penerima.sql # RENAME kolom pengirim -> penerima (lihat bagian di atas)
+│   ├── 08_rename_pengirim_ke_penerima.sql # RENAME kolom pengirim -> penerima (lihat bagian di atas)
+│   ├── 09_tambah_kolom_asal_surat_jalan.sql # ALTER tambah kolom asal (native/migrasi_legacy)
+│   └── migrate_legacy_surat_jalan.php # script DATA sekali-jalan (BUKAN skema) -- migrasi surat_jalan lama, lihat bagian di atas
 ├── public/
 │   ├── index.php             # front controller
 │   └── uploads/trips/{id}/   # foto checkpoint, disajikan langsung sbg file statis

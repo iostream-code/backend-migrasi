@@ -1,0 +1,172 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Migrasi data HISTORIS dari `surat_jalan` (tabel lama milik backend-production,
+ * masih live dipakai surat-jalan-apk/produksi-apk/finance-apk -- TIDAK PERNAH
+ * ditulis/diubah oleh script ini) ke `ekspedisi_t_surat_jalan` +
+ * `ekspedisi_t_surat_jalan_item` (tabel app ini).
+ *
+ * BUKAN bagian dari urutan skema 01_..sql s/d 09_..sql -- ini operasi DATA
+ * sekali-jalan, bukan perubahan skema. WAJIB dijalankan SETELAH
+ * database/09_tambah_kolom_asal_surat_jalan.sql (baca komentar di file itu
+ * dulu -- ada risiko baris kehitung dobel di perhitungan sisa qty kalau
+ * kolom `asal` belum ada).
+ *
+ * Yang dilakukan per no_surat_jalan (1 dokumen SJ fisik = 1 header + N item,
+ * digrupkan dari baris-baris `surat_jalan` yang no_surat_jalan-nya sama --
+ * kendaraan/plat/tanggal SAMA di semua baris utk 1 no_surat_jalan yang sama,
+ * lihat db_dump.sql):
+ * - Header `ekspedisi_t_surat_jalan`: no_surat_jalan ASLI dipertahankan (BUKAN
+ *   di-generate ulang format SJ-YYYYMMDD-xxxx), asal='migrasi_legacy',
+ *   status='terkirim' (seragam -- valid_cs di data lama seragam readonly=1,
+ *   tidak ada info yang bisa dipetakan andal ke 'draft'/'tervalidasi').
+ * - driver_id SENGAJA NULL -- kolom `pengirim` di data lama cuma teks bebas
+ *   (ratusan nilai unik gaya "Yoyo (diambil)"/"Haer/gojek"), TIDAK match ke
+ *   ekspedisi_m_supir/shared_m_users manapun secara andal. Nilai aslinya
+ *   disimpan di `catatan` (BUKAN dipetakan ke `penerima` -- beda arti,
+ *   penerima = PIC tujuan, bukan nama pengirim/kurir).
+ * - foto_surat_jalan disimpan sbg URL ABSOLUT ke host lama
+ *   (https://indokoper.com/foto_surat_jalan/{filename}) -- TIDAK disalin
+ *   fisik. Frontend (adminSuratJalan.js, fotoUrl()) sudah disesuaikan buat
+ *   nampilin URL absolut apa adanya (tidak digabung lagi dgn API_BASE_URL).
+ * - Item `ekspedisi_t_surat_jalan_item`: penjualan_detail_performa_id +
+ *   jumlah_kirim APA ADANYA dari tiap baris `surat_jalan` dalam grup itu.
+ *
+ * Idempotent -- aman dijalankan ulang kalau sempat gagal di tengah jalan
+ * (skip no_surat_jalan yang sudah py baris asal='migrasi_legacy'; UNIQUE KEY
+ * di no_surat_jalan jadi pengaman kedua kalau pre-check ini kelewatan).
+ *
+ * Pakai: php database/migrate_legacy_surat_jalan.php [--since=2024-01-01] [--dry-run]
+ */
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+use App\Database;
+
+(Dotenv\Dotenv::createImmutable(dirname(__DIR__)))->load();
+
+$since = '2024-01-01';
+$dryRun = false;
+foreach ($argv as $arg) {
+    if (str_starts_with($arg, '--since=')) {
+        $since = substr($arg, 8);
+    }
+    if ($arg === '--dry-run') {
+        $dryRun = true;
+    }
+}
+
+$pdo = Database::connection();
+
+// Idempotency guard -- lihat komentar atas.
+$already = $pdo->query("SELECT no_surat_jalan FROM ekspedisi_t_surat_jalan WHERE asal = 'migrasi_legacy'")
+    ->fetchAll(PDO::FETCH_COLUMN);
+$alreadyMigrated = array_flip($already);
+
+$stmt = $pdo->prepare(
+    'SELECT no_surat_jalan, penjualan_detail_performa_id, jumlah_kirim, tanggal, kendaraan, plat,
+            pengirim, foto_surat_jalan, tgl_di_kirim
+     FROM surat_jalan
+     WHERE tanggal >= :since
+     ORDER BY no_surat_jalan, id'
+);
+$stmt->execute(['since' => $since]);
+$rows = $stmt->fetchAll();
+
+$groups = [];
+foreach ($rows as $row) {
+    $groups[$row['no_surat_jalan']][] = $row;
+}
+
+$toMigrate = array_filter(array_keys($groups), fn ($no) => !isset($alreadyMigrated[$no]));
+
+printf(
+    "%d baris surat_jalan sejak %s -> %d dokumen SJ (no_surat_jalan unik), %d sudah pernah dimigrasi, %d akan diproses.\n",
+    count($rows),
+    $since,
+    count($groups),
+    count($groups) - count($toMigrate),
+    count($toMigrate)
+);
+
+if (!$toMigrate) {
+    echo "Tidak ada yang perlu dimigrasi.\n";
+    exit(0);
+}
+
+$insertHeader = $pdo->prepare(
+    "INSERT INTO ekspedisi_t_surat_jalan
+        (no_surat_jalan, driver_id, tujuan, kendaraan, plat, jumlah_kirim, tgl_kirim,
+         foto_surat_jalan, catatan, status, asal, created_at)
+     VALUES
+        (:no_surat_jalan, NULL, NULL, :kendaraan, :plat, :jumlah_kirim, :tgl_kirim,
+         :foto, :catatan, 'terkirim', 'migrasi_legacy', :created_at)"
+);
+$insertItem = $pdo->prepare(
+    'INSERT INTO ekspedisi_t_surat_jalan_item (surat_jalan_id, penjualan_detail_performa_id, jumlah_kirim)
+     VALUES (:surat_jalan_id, :penjualan_detail_performa_id, :jumlah_kirim)'
+);
+
+$pdo->beginTransaction();
+$countHeader = 0;
+$countItem = 0;
+
+try {
+    foreach ($toMigrate as $noSuratJalan) {
+        $lines = $groups[$noSuratJalan];
+        $first = $lines[0];
+
+        $jumlahKirim = array_sum(array_column($lines, 'jumlah_kirim'));
+        $pengirimList = array_values(array_unique(array_filter(array_column($lines, 'pengirim'))));
+        $catatan = 'Dimigrasi dari surat_jalan lama (backend-production)';
+        if ($pengirimList) {
+            $catatan .= ' -- pengirim (data lama): ' . implode(', ', $pengirimList);
+        }
+        $foto = ($first['foto_surat_jalan'] && $first['foto_surat_jalan'] !== '-')
+            ? 'https://indokoper.com/foto_surat_jalan/' . $first['foto_surat_jalan']
+            : null;
+        $tglKirim = $first['tgl_di_kirim'] ?? $first['tanggal'];
+
+        if ($dryRun) {
+            $countHeader++;
+            $countItem += count($lines);
+            continue;
+        }
+
+        $insertHeader->execute([
+            'no_surat_jalan' => $noSuratJalan,
+            'kendaraan' => $first['kendaraan'] ?: null,
+            'plat' => $first['plat'] ?: null,
+            'jumlah_kirim' => $jumlahKirim,
+            'tgl_kirim' => $tglKirim ? date('Y-m-d', strtotime((string) $tglKirim)) : null,
+            'foto' => $foto,
+            'catatan' => $catatan,
+            'created_at' => $first['tanggal'] ?: date('Y-m-d H:i:s'),
+        ]);
+        $suratJalanId = (int) $pdo->lastInsertId();
+        $countHeader++;
+
+        foreach ($lines as $line) {
+            $insertItem->execute([
+                'surat_jalan_id' => $suratJalanId,
+                'penjualan_detail_performa_id' => $line['penjualan_detail_performa_id'],
+                'jumlah_kirim' => $line['jumlah_kirim'],
+            ]);
+            $countItem++;
+        }
+    }
+
+    if ($dryRun) {
+        $pdo->rollBack();
+        printf("[DRY RUN] Akan bikin %d SJ header + %d baris item. Tidak ada perubahan disimpan.\n", $countHeader, $countItem);
+    } else {
+        $pdo->commit();
+        printf("Selesai: %d SJ header + %d baris item dimigrasi.\n", $countHeader, $countItem);
+    }
+} catch (Throwable $e) {
+    $pdo->rollBack();
+    fwrite(STDERR, "GAGAL, semua perubahan dibatalkan: " . $e->getMessage() . "\n");
+    exit(1);
+}
