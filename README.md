@@ -494,6 +494,17 @@ dalam 1 query (mis. `WHERE a LIKE :q OR b LIKE :q`), throw
 ke database produksi setelah fix (search "amb-c-11" balikin 7 hasil yang benar, termasuk baris
 hasil disambiguasi `"... (migrasi-2)"` di atas).
 
+**Urutan `ORDER BY` (2026-08-20):** `SuratJalan::list()` semula `ORDER BY sj.id DESC`. Ini keliru
+buat 1.508 baris hasil migrasi historis — `id`-nya mencerminkan urutan PEMROSESAN skrip migrasi
+(dikelompokkan per `no_surat_jalan`), bukan urutan tanggal dokumen aslinya, jadi baris tahun 2024
+bisa nongol paling atas sementara baris hari ini terkubur di tengah. Diganti jadi
+`ORDER BY sj.created_at DESC, sj.id DESC` — `created_at` diisi tanggal `surat_jalan.tanggal` asli
+waktu migrasi (lihat bagian migrasi di atas), jadi konsisten mewakili tanggal dokumen sebenarnya
+baik utk baris native maupun hasil migrasi. Dites langsung ke database produksi: baris `id`
+tertinggi (3754, `SJ_b`, tanggal `2024-01-15`) sekarang benar-benar di bawah, baris tanggal
+`2026-08-20` (hari ini) di paling atas. Tidak ditambah index baru di `created_at` — cuma 1.508
+baris, filesort-nya masih murah tanpa index.
+
 #### Alur validasi (2026-08-19)
 
 Proses fisik yang dimodelkan: admin bikin SJ (`draft`) → dokumen fisik dibawa supir → barang

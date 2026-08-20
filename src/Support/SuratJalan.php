@@ -72,7 +72,7 @@ class SuratJalan
         $stmt = $pdo->prepare(
             "SELECT sj.*, COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama_supir, v.nama_lengkap AS nama_validator
              {$from} {$whereSql}
-             ORDER BY sj.id DESC
+             ORDER BY sj.created_at DESC, sj.id DESC
              LIMIT {$perPage} OFFSET {$offset}"
         );
         $stmt->execute($params);
