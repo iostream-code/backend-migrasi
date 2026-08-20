@@ -21,13 +21,13 @@ class AdminController extends Controller
 
     /**
      * GET /admin/drivers
-     * Daftar supir yang SEDANG MELAKUKAN PENGIRIMAN + posisi & status
-     * terakhir, dipakai marker di peta tab "Ekspedisi" (2026-08-20: tab ini
-     * diputuskan jadi MURNI monitoring, bukan lagi tempat plotting supir ke
-     * SPK -- lihat "Plot SPK ke Supir" yang dihapus & komentar
-     * SuratJalanController::store() soal auto-bikin trip). Dulu nampilin
-     * SEMUA supir tanpa syarat; sekarang di-filter cuma yang "sedang
-     * mengirim", ditentukan lewat DUA jalur independen:
+     * Default (tanpa query `semua`): daftar supir yang SEDANG MELAKUKAN
+     * PENGIRIMAN + posisi & status terakhir, dipakai marker di peta tab
+     * "Ekspedisi" (2026-08-20: tab ini diputuskan jadi MURNI monitoring,
+     * bukan lagi tempat plotting supir ke SPK -- lihat "Plot SPK ke Supir"
+     * yang dihapus & komentar SuratJalanController::store() soal auto-bikin
+     * trip). Difilter cuma yang "sedang mengirim", ditentukan lewat DUA
+     * jalur independen:
      * 1. Py trip aktif (`ekspedisi_t_trip.status='in_progress'`) -- jalur
      *    supir INTERNAL (trip auto-dibikin saat SJ dibuat dgn driver
      *    internal), atau trip lama peninggalan "Plot SPK ke Supir" sebelum
@@ -37,24 +37,37 @@ class AdminController extends Controller
      *    draft/terkirim) -- jalur supir EKSTERNAL, yang sejak 2026-08-20
      *    TIDAK PERNAH dibikinkan trip lagi (tidak bisa login/checkpoint apa
      *    pun) -- status "sedang mengirim"-nya cukup dibaca dari SJ langsung.
+     *
+     * `?semua=1`: SEMUA supir tanpa syarat filter di atas -- dipakai dropdown
+     * "Pilih supir" saat admin bikin SJ baru (adminNewSuratJalan.js). WAJIB
+     * mode terpisah dari default di atas: supir yang BARU AKAN ditugaskan
+     * justru belum "sedang mengirim" sama sekali (belum ada trip/SJ aktif
+     * atas namanya) -- kalau dropdown ini ikut pakai filter default, hasilnya
+     * SELALU kosong/nyaris kosong utk kasus paling umum (assign supir yang
+     * lagi nganggur). Bug ini sempat kejadian nyata (2026-08-20) sebelum
+     * parameter ini ditambahkan -- dropdown sempat ikut manggil endpoint yang
+     * sama tanpa `semua=1`.
+     *
      * NB: {driver} pada endpoint ini adalah id dari ekspedisi_m_supir, bukan user_id shared_m_users.
      */
     public function drivers(Request $request, Response $response): Response
     {
         $pdo = Database::connection();
+        $semua = (($request->getQueryParams())['semua'] ?? '') !== '';
 
         // LEFT JOIN (bukan JOIN) -- supir tipe='eksternal' tidak punya baris
         // shared_m_users sama sekali, namanya diambil dari nama_eksternal.
+        $where = $semua ? '' : "WHERE EXISTS (
+                 SELECT 1 FROM ekspedisi_t_trip t WHERE t.driver_id = s.id AND t.status = 'in_progress'
+             ) OR EXISTS (
+                 SELECT 1 FROM ekspedisi_t_surat_jalan sj WHERE sj.driver_id = s.id AND sj.status IN ('draft', 'terkirim')
+             )";
         $stmt = $pdo->query(
             "SELECT s.id, s.tipe, s.driver_status, s.last_lat, s.last_lng, s.last_ping_at,
                     COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama
              FROM ekspedisi_m_supir s
              LEFT JOIN shared_m_users u ON u.user_id = s.user_id
-             WHERE EXISTS (
-                 SELECT 1 FROM ekspedisi_t_trip t WHERE t.driver_id = s.id AND t.status = 'in_progress'
-             ) OR EXISTS (
-                 SELECT 1 FROM ekspedisi_t_surat_jalan sj WHERE sj.driver_id = s.id AND sj.status IN ('draft', 'terkirim')
-             )
+             {$where}
              ORDER BY nama"
         );
         $drivers = $stmt->fetchAll();

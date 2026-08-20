@@ -50,19 +50,64 @@ class SuratJalanController extends Controller
      * t_penjualan_detail_performa, lihat App\Support\PenjualanItemLookup) --
      * dipakai form "Buat Surat Jalan" begitu admin isi/cek nomor SPK, buat
      * nampilin breakdown per produk sebelum submit.
+     *
+     * {penjualan_id} boleh diisi ID asli persis ("INV_01811-2") ATAU cuma
+     * angkanya ("1811"/"1811-2") ATAU format tampilan ("SPK-1811-2") --
+     * lihat resolvePenjualanId() (2026-08-20, sebelumnya WAJIB persis "INV_..."
+     * apa adanya, tidak praktis diketik admin dari HP tiap kali).
      */
     public function spkItems(Request $request, Response $response, array $args): Response
     {
         $pdo = Database::connection();
-        $penjualanId = (string) $args['penjualan_id'];
+        $penjualanId = self::resolvePenjualanId($pdo, trim((string) $args['penjualan_id']));
 
-        $exists = $pdo->prepare('SELECT 1 FROM t_penjualan_header WHERE penjualan_id = :id LIMIT 1');
-        $exists->execute(['id' => $penjualanId]);
-        if (!$exists->fetchColumn()) {
+        if ($penjualanId === null) {
             return $this->error($response, 'SPK/penjualan_id tidak ditemukan, cek lagi penulisannya.', 404);
         }
 
         return $this->json($response, PenjualanItemLookup::lines($pdo, $penjualanId));
+    }
+
+    /**
+     * Cari penjualan_id ASLI (persis kolom t_penjualan_header.penjualan_id)
+     * dari input admin yang boleh berupa beberapa bentuk:
+     * 1. ID asli persis, mis. "INV_01811-2" -- exact match langsung (paling
+     *    umum kalau nomornya di-paste dari tempat lain).
+     * 2. Cuma angkanya, dgn/tanpa leading zero & prefix "INV_"/"SPK-", mis.
+     *    "1811", "01811", "1811-2", "SPK-1811-2" -- dicocokkan via REGEXP
+     *    ANCHORED (^...$, bukan substring/LIKE) ke angka & suffix urutannya
+     *    PERSIS, supaya "23" tidak ikut nyangkut ke "INV_00123" (beda angka,
+     *    kebetulan "23" jadi akhiran string "123"). Match harus PERSIS 1 baris
+     *    -- ambigu (jarang terjadi, tapi jaga-jaga) dianggap tidak ketemu
+     *    daripada nebak salah.
+     */
+    private static function resolvePenjualanId(\PDO $pdo, string $input): ?string
+    {
+        if ($input === '') {
+            return null;
+        }
+
+        $exact = $pdo->prepare('SELECT penjualan_id FROM t_penjualan_header WHERE penjualan_id = :id LIMIT 1');
+        $exact->execute(['id' => $input]);
+        $found = $exact->fetchColumn();
+        if ($found !== false) {
+            return $found;
+        }
+
+        if (!preg_match('/^(?:INV_?|SPK-?)?0*(\d+)(-(\d+))?$/i', $input, $m)) {
+            return null;
+        }
+        $num = $m[1];
+        $suffix = $m[3] ?? null;
+        $pattern = $suffix !== null
+            ? '^INV_?0*' . $num . '-' . $suffix . '$'
+            : '^INV_?0*' . $num . '$';
+
+        $fuzzy = $pdo->prepare('SELECT penjualan_id FROM t_penjualan_header WHERE penjualan_id REGEXP :pattern LIMIT 2');
+        $fuzzy->execute(['pattern' => $pattern]);
+        $rows = $fuzzy->fetchAll(\PDO::FETCH_COLUMN);
+
+        return count($rows) === 1 ? $rows[0] : null;
     }
 
     /**
