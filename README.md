@@ -700,6 +700,33 @@ ekspedisi-apk-backend/
         └── ConfigController.php   # /config/check-version (cek versi app, lihat bagian "Cek versi app" di bawah)
 ```
 
+## Performa `GET /admin/sj` -- N+1 dibatch (2026-08-20)
+
+Tab "SJ" FE sempat kerasa SANGAT lambat pas load (dilaporkan user, diukur langsung ke produksi).
+Root cause: `SuratJalan::list()` dulu manggil `items()` + `resolveClientNames()` per BARIS di
+dalam loop -- 1 halaman (20 baris) = sampai ~41 query (1 COUNT + 1 SELECT list utama + 20x items +
+20x client_names, N+1 klasik). Query individualnya sendiri CEPAT (ada index di kolom yang relevan,
+tabelnya juga cuma ~1500 baris) -- tapi `DB_HOST` (`indokoper.com`) beda host dari backend, jadi
+tiap query bayar round-trip jaringan (~40-50ms terukur). 41 query x ~45ms = detik-an, padahal kerja
+DB-nya sendiri cuma puluhan ms.
+
+Fix: `items()`+`resolveClientNames()` per baris diganti `batchItemsByRowId()`+
+`batchClientNamesByPenjualanId()` -- MASING-MASING cuma 1 query (`WHERE ... IN (...)`) buat SEMUA
+baris di halaman sekaligus, dikelompokkan di PHP setelahnya (bukan di SQL). Total round-trip per
+`list()` turun dari ~1+1+2N jadi TETAP 4 apa pun ukuran halamannya. Diukur langsung ke produksi
+(2026-08-20, `tahun=2026`, 20 baris): **~1831ms -> ~186ms** (~10x). Diverifikasi hasilnya IDENTIK
+dgn sebelum dibatch (dibandingkan baris-per-baris lewat `items()` yang lama).
+
+`items()`/`resolveClientNames()` (versi single-row, TIDAK di-N+1-kan) dipertahankan apa adanya --
+masih dipakai `find()` (`GET /admin/sj/{id}`, cuma 1 baris, N+1 tidak relevan di sana).
+
+**Kalau nanti masih kerasa lambat lagi setelah data jauh lebih besar** (skrng ~1500 baris, index
+`status`/kolom lain di query WHERE list() belum ada krn di titik ini overhead-nya didominasi
+round-trip jaringan, bukan biaya query DB-nya -- nambah index sekarang dampaknya nyaris tidak
+kerasa) -- pertimbangkan nambah index ke `ekspedisi_t_surat_jalan.status` dan
+`ekspedisi_t_surat_jalan(tgl_kirim, created_at)` KALAU EXPLAIN nunjukkin full table scan jadi
+mahal. BUKAN prioritas sekarang -- N+1 di atas adalah 95%+ dari masalahnya.
+
 ## Filter tahun `GET /admin/sj` (2026-08-20)
 
 `SuratJalan::list()` terima query param `tahun` opsional -- filter `YEAR(COALESCE(sj.tgl_kirim,

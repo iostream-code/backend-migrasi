@@ -86,9 +86,31 @@ class SuratJalan
         $stmt->execute($params);
         $rows = $stmt->fetchAll();
 
+        // Batch (2026-08-20, dulu N+1: items()+resolveClientNames() per baris di
+        // loop, sampai 40+ query cuma buat 1 halaman 20 baris -- DB host beda dgn
+        // backend (indokoper.com), tiap round-trip jaringan ~40-50ms, kekumpul jadi
+        // lambat BANGET meski tiap query individualnya cepat. Diukur langsung ke
+        // produksi: list() 1 halaman turun dari ~1.8 detik jadi puluhan ms setelah
+        // dibatch. Lihat batchItemsByRowId()/batchClientNamesByPenjualanId() di bawah.
+        $ids = array_column($rows, 'id');
+        $itemsByRowId = self::batchItemsByRowId($pdo, $ids);
+
+        $penjualanIdsNeeded = [];
         foreach ($rows as &$row) {
-            $row['items'] = self::items($pdo, (int) $row['id']);
-            $row['client_names'] = self::resolveClientNames($pdo, $row);
+            $row['items'] = $itemsByRowId[(int) $row['id']] ?? [];
+            $rowPenjualanIds = self::penjualanIdsForRow($row);
+            foreach ($rowPenjualanIds as $pid) {
+                $penjualanIdsNeeded[$pid] = true;
+            }
+        }
+        unset($row);
+
+        $clientNameByPenjualanId = self::batchClientNamesByPenjualanId($pdo, array_keys($penjualanIdsNeeded));
+        foreach ($rows as &$row) {
+            $row['client_names'] = array_values(array_unique(array_filter(array_map(
+                static fn (string $pid) => $clientNameByPenjualanId[$pid] ?? null,
+                self::penjualanIdsForRow($row)
+            ))));
         }
         unset($row);
 
@@ -170,15 +192,54 @@ class SuratJalan
     }
 
     /**
-     * Nama klien (m_client.client_nama, READ-ONLY ke backend-production) dari
-     * SPK yang disentuh SJ ini -- dari items() (jalur manual, breakdown per
-     * lini produk, bisa lintas beberapa SPK/klien sekaligus) kalau ada,
-     * fallback ke kolom penjualan_id di header (jalur trip-linked lama,
-     * selalu 1 SPK, tidak punya baris item) kalau items kosong. Dipakai
-     * frontend buat kolom "Klien" di tabel SJ (GET /admin/sj) -- ditampilkan
-     * gabungan "Klien 1 | Klien 2" kalau lebih dari 1 SPK/klien tersentuh.
+     * Versi BATCH dari items() -- 1 query buat SEMUA $suratJalanIds sekaligus
+     * (dipakai list(), lihat catatan N+1 di sana), dikelompokkan per
+     * surat_jalan_id di PHP setelahnya. Bentuk tiap baris SAMA PERSIS dgn
+     * items() (kolom surat_jalan_id dibuang lagi setelah dipakai grouping,
+     * supaya kontrak response API tidak berubah).
+     * @return array<int, array> surat_jalan_id => baris item (bentuk sama dgn items())
      */
-    private static function resolveClientNames(PDO $pdo, array $row): array
+    private static function batchItemsByRowId(PDO $pdo, array $suratJalanIds): array
+    {
+        if (!$suratJalanIds) {
+            return [];
+        }
+
+        $placeholders = [];
+        $params = [];
+        foreach ($suratJalanIds as $i => $id) {
+            $key = "sjid{$i}";
+            $placeholders[] = ":{$key}";
+            $params[$key] = $id;
+        }
+
+        $stmt = $pdo->prepare(
+            'SELECT i.surat_jalan_id, i.id, i.penjualan_detail_performa_id, i.jumlah_kirim, pdp.penjualan_jenis, pdp.penjualan_id
+             FROM ekspedisi_t_surat_jalan_item i
+             LEFT JOIN t_penjualan_detail_performa pdp ON pdp.penjualan_detail_performa_id = i.penjualan_detail_performa_id
+             WHERE i.surat_jalan_id IN (' . implode(',', $placeholders) . ')
+             ORDER BY i.surat_jalan_id, i.id'
+        );
+        $stmt->execute($params);
+
+        $grouped = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $sjId = (int) $row['surat_jalan_id'];
+            unset($row['surat_jalan_id']);
+            $grouped[$sjId][] = $row;
+        }
+
+        return $grouped;
+    }
+
+    /**
+     * Daftar penjualan_id yang disentuh 1 baris SJ -- dari items() (jalur manual,
+     * bisa lintas beberapa SPK sekaligus) kalau ada, fallback ke kolom
+     * penjualan_id di header (jalur trip-linked lama, selalu 1 SPK, tidak punya
+     * baris item) kalau items kosong. Dipakai resolveClientNames() (single-row)
+     * DAN list() (batch) supaya logikanya SAMA PERSIS di kedua jalur.
+     */
+    private static function penjualanIdsForRow(array $row): array
     {
         $penjualanIds = array_values(array_unique(array_filter(array_map(
             static fn (array $item) => $item['penjualan_id'] ?? null,
@@ -188,6 +249,59 @@ class SuratJalan
         if (!$penjualanIds && !empty($row['penjualan_id'])) {
             $penjualanIds = [$row['penjualan_id']];
         }
+
+        return $penjualanIds;
+    }
+
+    /**
+     * Versi BATCH dari resolveClientNames() -- 1 query ambil nama klien utk
+     * SEMUA penjualan_id yang dibutuhkan lintas SEMUA baris di halaman sekaligus
+     * (dipakai list(), lihat catatan N+1 di atas), dikembalikan sbg map supaya
+     * pemanggil bisa susun ulang per baris tanpa query tambahan.
+     * @return array<string, string> penjualan_id => client_nama
+     */
+    private static function batchClientNamesByPenjualanId(PDO $pdo, array $penjualanIds): array
+    {
+        if (!$penjualanIds) {
+            return [];
+        }
+
+        $placeholders = [];
+        $params = [];
+        foreach ($penjualanIds as $i => $penjualanId) {
+            $key = "pid{$i}";
+            $placeholders[] = ":{$key}";
+            $params[$key] = $penjualanId;
+        }
+
+        $stmt = $pdo->prepare(
+            'SELECT p.penjualan_id, c.client_nama
+             FROM t_penjualan_header p
+             JOIN m_client c ON c.client_id = p.client_id
+             WHERE p.penjualan_id IN (' . implode(',', $placeholders) . ')'
+        );
+        $stmt->execute($params);
+
+        $map = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $map[$row['penjualan_id']] = $row['client_nama'];
+        }
+
+        return $map;
+    }
+
+    /**
+     * Nama klien (m_client.client_nama, READ-ONLY ke backend-production) dari
+     * SPK yang disentuh SJ ini -- dari items() (jalur manual, breakdown per
+     * lini produk, bisa lintas beberapa SPK/klien sekaligus) kalau ada,
+     * fallback ke kolom penjualan_id di header (jalur trip-linked lama,
+     * selalu 1 SPK, tidak punya baris item) kalau items kosong. Dipakai
+     * find() (single-row, mis. GET /admin/sj/{id}) -- list() pakai versi
+     * batch di atas, N+1 kalau method ini yang dipanggil per-baris di loop.
+     */
+    private static function resolveClientNames(PDO $pdo, array $row): array
+    {
+        $penjualanIds = self::penjualanIdsForRow($row);
 
         if (!$penjualanIds) {
             return [];
