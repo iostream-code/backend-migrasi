@@ -1,0 +1,18 @@
+# Fallback KALAU document root domain/subdomain TIDAK BISA diarahkan
+# langsung ke folder public/ (lihat DEPLOY.md) -- banyak shared hosting
+# murah cuma kasih 1 document root tetap (public_html) tanpa opsi ganti.
+# Kalau document root SUDAH diarahkan ke public/, file .htaccess ini
+# tidak kepakai sama sekali (aman dibiarkan, tidak mengganggu).
+
+# Tutup akses langsung ke source code & file sensitif -- WAJIB kalau file
+# ini yang dipakai (root jadi ikut ke-serve Apache secara statis).
+<FilesMatch "^(composer\.(json|lock)|\.env(\.example)?|.*\.sql)$">
+    Require all denied
+</FilesMatch>
+
+RewriteEngine On
+RewriteRule ^(src|vendor|database)/ - [F,L]
+
+# Lempar semua request lain ke public/, biar Slim (public/index.php) yang urus.
+RewriteCond %{REQUEST_URI} !^/public/
+RewriteRule ^(.*)$ public/$1 [L]

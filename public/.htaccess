@@ -1,0 +1,19 @@
+RewriteEngine On
+
+# Front controller Slim: semua request yg bukan file/folder asli (mis. upload
+# foto di uploads/) diarahkan ke index.php, biar router Slim (src/bootstrap.php)
+# yang tangani. Wajib ada -- tanpa ini semua route selain "/" 404 dari Apache
+# duluan, belum sempat nyampe ke Slim.
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.php [QSA,L]
+
+# Header Authorization (dipakai JWT Bearer token) sering di-strip Apache/PHP
+# CGI/FastCGI shared hosting kalau tidak dipaksa lewat begini.
+<IfModule mod_rewrite.c>
+    RewriteCond %{HTTP:Authorization} .
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+</IfModule>
+
+# Jangan expose isi folder yg belum ada index-nya.
+Options -Indexes
