@@ -15,6 +15,15 @@ use PDO;
  */
 class SuratJalan
 {
+    /**
+     * $filters: status?, penjualan_id?, q? (cari no_surat_jalan/tujuan/penerima/
+     * nama supir/nomor SPK yang disentuh -- lihat EXISTS ke item di bawah),
+     * page? (default 1), per_page? (default 20, maks 100).
+     * Return: { data, total, page, per_page } -- 2026-08-20, dulu array polos,
+     * digantt krn tabel ini bisa py ribuan baris stlh migrate_legacy_surat_jalan.php,
+     * fetch semua sekaligus tanpa batas jadi berat. total dipakai frontend
+     * buat hitung jumlah halaman.
+     */
     public static function list(PDO $pdo, array $filters = []): array
     {
         $where = [];
@@ -28,26 +37,53 @@ class SuratJalan
             $where[] = 'sj.penjualan_id = :penjualan_id';
             $params['penjualan_id'] = $filters['penjualan_id'];
         }
-
-        $sql = "SELECT sj.*, COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama_supir, v.nama_lengkap AS nama_validator
-                FROM ekspedisi_t_surat_jalan sj
-                LEFT JOIN ekspedisi_m_supir s ON s.id = sj.driver_id
-                LEFT JOIN shared_m_users u ON u.user_id = s.user_id
-                LEFT JOIN shared_m_users v ON v.user_id = sj.divalidasi_oleh";
-        if ($where) {
-            $sql .= ' WHERE ' . implode(' AND ', $where);
+        if (!empty($filters['q'])) {
+            // Placeholder :q dipakai 6x di query yang sama -- PDO native prepares
+            // (ATTR_EMULATE_PREPARES=false, lihat Database.php) TIDAK izinkan
+            // named placeholder yang sama dipakai berkali-kali, jadi tiap
+            // occurrence butuh nama beda meski nilainya sama persis.
+            $where[] = "(sj.no_surat_jalan LIKE :q1 OR sj.tujuan LIKE :q2 OR sj.penerima LIKE :q3
+                         OR u.nama_lengkap LIKE :q4 OR s.nama_eksternal LIKE :q5
+                         OR EXISTS (
+                             SELECT 1 FROM ekspedisi_t_surat_jalan_item sji
+                             JOIN t_penjualan_detail_performa pdp ON pdp.penjualan_detail_performa_id = sji.penjualan_detail_performa_id
+                             WHERE sji.surat_jalan_id = sj.id AND pdp.penjualan_id LIKE :q6
+                         ))";
+            $qLike = '%' . $filters['q'] . '%';
+            foreach (['q1', 'q2', 'q3', 'q4', 'q5', 'q6'] as $key) {
+                $params[$key] = $qLike;
+            }
         }
-        $sql .= ' ORDER BY sj.id DESC';
 
-        $stmt = $pdo->prepare($sql);
+        $from = 'FROM ekspedisi_t_surat_jalan sj
+                 LEFT JOIN ekspedisi_m_supir s ON s.id = sj.driver_id
+                 LEFT JOIN shared_m_users u ON u.user_id = s.user_id
+                 LEFT JOIN shared_m_users v ON v.user_id = sj.divalidasi_oleh';
+        $whereSql = $where ? ' WHERE ' . implode(' AND ', $where) : '';
+
+        $countStmt = $pdo->prepare("SELECT COUNT(*) {$from} {$whereSql}");
+        $countStmt->execute($params);
+        $total = (int) $countStmt->fetchColumn();
+
+        $page = max(1, (int) ($filters['page'] ?? 1));
+        $perPage = min(100, max(1, (int) ($filters['per_page'] ?? 20)));
+        $offset = ($page - 1) * $perPage;
+
+        $stmt = $pdo->prepare(
+            "SELECT sj.*, COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama_supir, v.nama_lengkap AS nama_validator
+             {$from} {$whereSql}
+             ORDER BY sj.id DESC
+             LIMIT {$perPage} OFFSET {$offset}"
+        );
         $stmt->execute($params);
         $rows = $stmt->fetchAll();
 
         foreach ($rows as &$row) {
             $row['items'] = self::items($pdo, (int) $row['id']);
         }
+        unset($row);
 
-        return $rows;
+        return ['data' => $rows, 'total' => $total, 'page' => $page, 'per_page' => $perPage];
     }
 
     public static function find(PDO $pdo, int $id): ?array

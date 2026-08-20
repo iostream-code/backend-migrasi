@@ -77,17 +77,17 @@ class SpkReadyKirim
      * sebagian), hilang dari daftar ini (sisa qty per lini produk yang belum
      * terkirim tetap kelihatan lewat "Cek SPK" di form Buat Surat Jalan --
      * lihat App\Support\PenjualanItemLookup).
+     *
+     * $search (2026-08-20, opsional) -- cocokkan ke nama client atau no SPK.
+     * $page/$perPage -- LIMIT/OFFSET, di-cast int eksplisit sebelum
+     * diinterpolasi ke SQL (bukan dari input mentah, aman dari injection),
+     * PDO MySQL kadang rewel soal bind LIMIT/OFFSET sbg parameter bertipe.
+     * Return: { data, total, page, per_page } -- total dipakai frontend buat
+     * hitung jumlah halaman.
      */
-    public static function listBelumSj(PDO $pdo): array
+    public static function listBelumSj(PDO $pdo, ?string $search = null, int $page = 1, int $perPage = 20): array
     {
-        $stmt = $pdo->query(
-            "SELECT p.penjualan_id, p.no_spk, c.client_nama, p.lokasi_pabrik AS kota_asal,
-                    k.nama_kota AS kota_tujuan, p.penjualan_tanggal_kirim, p.tgl_cs_deadline,
-                    p.penjualan_total_qty
-             FROM t_penjualan_header p
-             JOIN m_client c ON c.client_id = p.client_id
-             LEFT JOIN m_kota k ON k.id_kota = p.kode_kota
-             WHERE " . self::BASE_WHERE . "
+        $where = self::BASE_WHERE . "
                AND NOT EXISTS (
                    SELECT 1 FROM ekspedisi_t_surat_jalan sj WHERE sj.penjualan_id = p.penjualan_id
                )
@@ -95,11 +95,41 @@ class SpkReadyKirim
                    SELECT 1 FROM ekspedisi_t_surat_jalan_item sji
                    JOIN t_penjualan_detail_performa pdp ON pdp.penjualan_detail_performa_id = sji.penjualan_detail_performa_id
                    WHERE pdp.penjualan_id = p.penjualan_id
-               )
-             ORDER BY p.penjualan_tanggal_kirim ASC"
-        );
+               )";
+        $params = [];
+        if ($search !== null && $search !== '') {
+            // :q1/:q2 (bukan :q dipakai 2x) -- PDO native prepares
+            // (ATTR_EMULATE_PREPARES=false) tidak izinkan named placeholder
+            // yang sama dipakai berkali-kali dlm 1 query, lihat Database.php.
+            $where .= ' AND (c.client_nama LIKE :q1 OR p.no_spk LIKE :q2)';
+            $params['q1'] = "%{$search}%";
+            $params['q2'] = "%{$search}%";
+        }
 
-        return $stmt->fetchAll();
+        $from = 'FROM t_penjualan_header p
+                 JOIN m_client c ON c.client_id = p.client_id
+                 LEFT JOIN m_kota k ON k.id_kota = p.kode_kota';
+
+        $countStmt = $pdo->prepare("SELECT COUNT(*) {$from} WHERE {$where}");
+        $countStmt->execute($params);
+        $total = (int) $countStmt->fetchColumn();
+
+        $page = max(1, $page);
+        $perPage = min(100, max(1, $perPage));
+        $offset = ($page - 1) * $perPage;
+
+        $stmt = $pdo->prepare(
+            "SELECT p.penjualan_id, p.no_spk, c.client_nama, p.lokasi_pabrik AS kota_asal,
+                    k.nama_kota AS kota_tujuan, p.penjualan_tanggal_kirim, p.tgl_cs_deadline,
+                    p.penjualan_total_qty
+             {$from}
+             WHERE {$where}
+             ORDER BY p.penjualan_tanggal_kirim ASC
+             LIMIT {$perPage} OFFSET {$offset}"
+        );
+        $stmt->execute($params);
+
+        return ['data' => $stmt->fetchAll(), 'total' => $total, 'page' => $page, 'per_page' => $perPage];
     }
 
     public static function find(PDO $pdo, string $penjualanId): ?array

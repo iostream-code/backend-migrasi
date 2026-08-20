@@ -20,7 +20,9 @@ class SuratJalanController extends Controller
 {
     /**
      * GET /admin/sj
-     * query opsional: status, penjualan_id
+     * query opsional: status, penjualan_id, q (cari no_surat_jalan/tujuan/
+     * penerima/nama supir/no SPK), page (default 1), per_page (default 20, maks 100)
+     * Return: { data, total, page, per_page } -- lihat App\Support\SuratJalan::list().
      */
     public function index(Request $request, Response $response): Response
     {

@@ -257,10 +257,19 @@ class AdminController extends Controller
      * dari spkReadyKirim() di atas, yang "belum diplot ke supir") -- dipakai
      * tab "SPK" (landing page admin) di ekspedisi-apk. Lihat
      * App\Support\SpkReadyKirim::listBelumSj().
+     * query opsional: q (cari nama client/no SPK), page, per_page (default 20, maks 100)
      */
     public function spkBelumSj(Request $request, Response $response): Response
     {
-        return $this->json($response, SpkReadyKirim::listBelumSj(Database::connection()));
+        $q = $request->getQueryParams();
+        $result = SpkReadyKirim::listBelumSj(
+            Database::connection(),
+            !empty($q['q']) ? (string) $q['q'] : null,
+            !empty($q['page']) ? (int) $q['page'] : 1,
+            !empty($q['per_page']) ? (int) $q['per_page'] : 20
+        );
+
+        return $this->json($response, $result);
     }
 
     /**

@@ -138,12 +138,12 @@ frontend, cuma implementasi & auth mechanism-nya yang beda (Bearer JWT, tetap ta
 | POST | `/admin/trips/{trip}/complete` | token + admin | Tandai trip selesai secara manual — **HANYA** untuk trip milik supir `tipe='eksternal'` (422 kalau supirnya internal). Satu-satunya cara menyelesaikan trip supir eksternal, karena mereka tidak punya akun & tidak bisa panggil `/driver/trip/{trip}/photo`+`/complete` sendiri. Lihat bagian "Supir eksternal" di bawah |
 | GET | `/admin/surat-jalan/{no}` | token + admin | Cek 1 nomor SJ asli (READ-ONLY ke `surat_jalan` milik `backend-production`) → `{ no_surat_jalan, tanggal, kendaraan, plat, pengirim, valid_cs, penjualan_id, client_nama, client_alamat }`, 404 kalau tidak ketemu |
 | GET | `/admin/spk-ready-kirim` | token + admin | Daftar SPK yang sudah disetujui utk dikirim tapi **belum diplot ke supir manapun** (READ-ONLY ke `t_penjualan_header`, `SpkReadyKirim::list()`) → `[{ penjualan_id, no_spk, client_nama, kota_asal, kota_tujuan, penjualan_tanggal_kirim, tgl_cs_deadline, penjualan_total_qty }]` |
-| GET | `/admin/spk-belum-sj` | token + admin | Daftar SPK ready-kirim yang **belum ada SJ sama sekali** (kriteria beda, independen dari baris di atas — `SpkReadyKirim::listBelumSj()`, dipakai tab "SPK" ekspedisi-apk) → bentuk field sama persis |
+| GET | `/admin/spk-belum-sj` | token + admin | Daftar SPK ready-kirim yang **belum ada SJ sama sekali** (kriteria beda, independen dari baris di atas — `SpkReadyKirim::listBelumSj()`, dipakai tab "SPK" ekspedisi-apk). Query opsional: `q` (cari nama client/no SPK), `page` (default 1), `per_page` (default 20, maks 100) → `{ data: [...bentuk field sama persis...], total, page, per_page }` |
 | GET | `/admin/ekspedisi` | token + admin | Daftar perusahaan ekspedisi aktif (READ-ONLY ke `m_expedisi`) → `[{ id_expedisi, kode_expedisi, nama_expedisi, pic, no_telp }]` — dipakai dropdown opsional saat Tambah Supir Eksternal |
 | POST | `/admin/trips/{trip}/pengajuan-biaya` | token + admin | `{ nominal_diajukan, keterangan? }` → 201. `nominal_diajukan` input manual admin. Berlaku utk trip supir internal maupun eksternal |
 | GET | `/admin/trips/{trip}/pengajuan-biaya` | token + admin | Riwayat pengajuan biaya utk 1 trip → `[{ id, trip_id, nominal_diajukan, status, nominal_disetujui, catatan_finance, ... }]` |
 | GET | `/admin/sj/spk/{penjualan_id}/items` | token + admin | Lini produk 1 SPK + sisa qty yang belum terkirim (READ-ONLY, lihat `App\Support\PenjualanItemLookup`) → `[{ penjualan_detail_performa_id, penjualan_jenis, penjualan_qty, terkirim, sisa }]`, 404 kalau SPK tidak ditemukan |
-| GET | `/admin/sj` | token + admin | Daftar surat jalan **milik app ini sendiri** (`ekspedisi_t_surat_jalan`, independen dari `surat_jalan` lama) — query opsional `?status=`/`?penjualan_id=` → `[{ id, no_surat_jalan, trip_id, penjualan_id, driver_id, nama_supir, tujuan, kendaraan, plat, penerima, jumlah_kirim, asal, items: [{ penjualan_detail_performa_id, penjualan_id, penjualan_jenis, jumlah_kirim }], foto_surat_jalan, status, ... }]` — `penjualan_id` di level item beda-beda kalau SJ ini lintas SPK, header `penjualan_id` cuma keisi jalur trip-linked lama. `asal` = `native`/`migrasi_legacy` (lihat "Migrasi data historis" di bawah) |
+| GET | `/admin/sj` | token + admin | Daftar surat jalan **milik app ini sendiri** (`ekspedisi_t_surat_jalan`, independen dari `surat_jalan` lama). Query opsional: `status`, `penjualan_id`, `q` (cari no_surat_jalan/tujuan/penerima/nama supir/no SPK yang disentuh), `page` (default 1), `per_page` (default 20, maks 100) → `{ data: [{ id, no_surat_jalan, trip_id, penjualan_id, driver_id, nama_supir, tujuan, kendaraan, plat, penerima, jumlah_kirim, asal, items: [{ penjualan_detail_performa_id, penjualan_id, penjualan_jenis, jumlah_kirim }], foto_surat_jalan, status, ... }], total, page, per_page }` — `penjualan_id` di level item beda-beda kalau SJ ini lintas SPK, header `penjualan_id` cuma keisi jalur trip-linked lama. `asal` = `native`/`migrasi_legacy` (lihat "Migrasi data historis" di bawah) |
 | POST | `/admin/sj` | token + admin | `{ trip_id?, driver_id (WAJIB), tujuan?, kendaraan?, plat?, penerima?, jumlah_kirim?, tgl_kirim?, catatan?, items?: [{ penjualan_detail_performa_id, jumlah_kirim }] }` → 201, 422 kalau `driver_id` kosong. Bikin SJ manual, tidak harus terkait trip. `items` BOLEH berisi lini produk dari beberapa SPK berbeda sekaligus (tidak ada `penjualan_id` di body lagi — SPK-nya diketahui per-item). Kalau `items` diisi, `jumlah_kirim` dihitung otomatis dari total item & tiap item divalidasi ulang satu-satu ke sisa qty terkini (422 kalau melebihi) |
 | GET | `/admin/sj/{id}` | token + admin | Detail 1 SJ |
 | PUT | `/admin/sj/{id}` | token + admin | `{ tujuan?, kendaraan?, plat?, penerima?, jumlah_kirim?, tgl_kirim?, catatan? }` — lengkapi/koreksi field (foto TIDAK lewat sini, lihat endpoint di bawah) |
@@ -430,13 +430,28 @@ migrasinya cuma soal punya riwayat yang seragam & bisa dilihat dari tab SJ app i
 php database/migrate_legacy_surat_jalan.php --dry-run          # preview, tidak nulis apa-apa
 php database/migrate_legacy_surat_jalan.php --since=2024-01-01 # default -- ganti kalau perlu
 ```
-Idempotent (aman diulang — skip `no_surat_jalan` yang sudah pernah bertanda
-`asal='migrasi_legacy'`; `UNIQUE KEY` di `no_surat_jalan` jadi pengaman kedua), 1 transaksi utk
-semua baris (gagal di tengah = rollback total, tidak ada state setengah-jadi). Per
-`no_surat_jalan`: `no_surat_jalan` ASLI dipertahankan (bukan digenerate ulang), `status`
-diseragamkan `terkirim` (data lama tidak punya info andal yang bisa dipetakan ke
-draft/tervalidasi — `valid_cs` di dump ini seragam `1` semua). Dua keputusan lain yang
-lossy-tapi-disengaja:
+Idempotent, **1 transaksi PER DOKUMEN** (bukan 1 transaksi besar utk semua baris seperti versi
+awal — direvisi setelah dites ke data produksi asli: kalau 1 transaksi besar & ada 1 dokumen
+bermasalah di tengah ~1500 dokumen, SEMUA yang sudah berhasil ikut rollback, harus diulang dari
+nol). Dokumen yang gagal di-skip & dilaporkan di akhir (nomor + pesan error), dokumen lain yang
+sudah berhasil TETAP tersimpan; jalankan lagi scriptnya setelah masalahnya ditinjau (idempotent,
+yang sudah berhasil tidak akan diulang lagi). Per `no_surat_jalan`: `no_surat_jalan` ASLI
+dipertahankan (bukan digenerate ulang) — **KECUALI kalau ada tabrakan** (lihat "Disambiguasi" di
+bawah), `status` diseragamkan `terkirim` (data lama tidak punya info andal yang bisa dipetakan
+ke draft/tervalidasi — `valid_cs` di dump ini seragam `1` semua). Empat keputusan lain yang
+lossy-tapi-disengaja (dua pertama ditemukan waktu benar-benar dites ke data produksi):
+- **Disambiguasi `no_surat_jalan`** — `surat_jalan` lama TIDAK py UNIQUE constraint di kolom
+  itu, dan ternyata ada kasus 2 DOKUMEN FISIK BERBEDA (jam beda, isi baris beda) dikasih nomor
+  yang cuma beda kapitalisasi (mis. `"SJ_003/Amb-c-11/2024"` vs `"SJ_003/amb-c-11/2024"`) —
+  bentrok pas insert krn UNIQUE KEY `ekspedisi_t_surat_jalan.no_surat_jalan` pakai collation
+  case-INSENSITIVE (`utf8mb4_unicode_ci`). Dideteksi & dikasih suffix `" (migrasi-2)"`,
+  `" (migrasi-3)"`, dst sebelum insert (dihitung SEBELUM proses, konsisten antar-run) — kedua
+  dokumen tetap tersimpan terpisah, bukan digabung/dibuang.
+- **`jumlah_kirim` NULL diisi 0** — sebagian baris `surat_jalan` lama ternyata punya
+  `jumlah_kirim` NULL (kolomnya nullable di skema lama, beda dari
+  `ekspedisi_t_surat_jalan_item.jumlah_kirim` yang NOT NULL). Baris & fotonya tetap tercatat
+  (bukan dilewati), dilaporkan di akhir. Baris tanpa `penjualan_detail_performa_id` (kalau ada)
+  beda kasus — DILEWATI per-baris (bukan diisi apa-apa), krn tidak bisa jadi item apa pun tanpa itu.
 - **`driver_id` tetap NULL** — kolom `pengirim` di data lama cuma teks bebas (465 nilai unik
   gaya `"Yoyo (diambil)"`/`"Haer/gojek"`), tidak match andal ke `ekspedisi_m_supir` manapun.
   Nilai aslinya disimpan di `catatan` (**bukan** dipetakan ke `penerima` — beda arti, `penerima`
@@ -447,10 +462,37 @@ lossy-tapi-disengaja:
   disesuaikan biar bisa nampilin URL absolut apa adanya (dites langsung, foto beneran kebuka
   dari host lama).
 
-Diverifikasi manual (2026-08-20): query SELECT+GROUP BY dijalankan terhadap database produksi
-asli (bukan cuma dump offline) — 3.160 baris → 1.508 dokumen, angka konsisten dengan hitungan
-dari `db_dump.sql`. Bagian INSERT belum dieksekusi di produksi (nunggu migration 09 dijalankan
-dulu oleh operator, sesuai konvensi "jalankan manual" di `database/`).
+**Sudah dijalankan sungguhan di produksi (2026-08-20)** setelah 2 putaran perbaikan berdasar
+error nyata yang muncul (jumlah_kirim NULL, tabrakan no_surat_jalan case-insensitive — keduanya
+sudah diceritakan di atas) — hasil akhir: 1.508 baris `ekspedisi_t_surat_jalan` ber-`asal =
+'migrasi_legacy'`, konsisten dengan hitungan `--dry-run` sebelumnya (3.160 baris → 1.508
+dokumen). `surat_jalan` (tabel lama) tetap utuh sepenuhnya — script ini cuma pernah `SELECT`
+dari situ, tidak sekalipun `UPDATE`/`DELETE`/`TRUNCATE`.
+
+#### Pagination & search (2026-08-20)
+
+Ditambahkan setelah migrasi historis di atas bikin `ekspedisi_t_surat_jalan` punya 1.500+ baris
+sekaligus — `GET /admin/sj` & `GET /admin/spk-belum-sj` yang sebelumnya fetch semua baris tanpa
+batas jadi berat. Keduanya sekarang terima `q` (search) + `page`/`per_page` (default 20, maks
+100 lewat `min(100, ...)`) dan return `{ data, total, page, per_page }` (dulu array polos —
+**breaking change** ke kontrak respons, semua konsumen frontend sudah disesuaikan). `total`
+dihitung dari query `COUNT(*)` terpisah pakai `WHERE` yang sama (tanpa `LIMIT`), `LIMIT`/`OFFSET`
+diinterpolasi langsung ke SQL (bukan bind parameter) — aman krn keduanya sudah di-cast `(int)`
+lebih dulu di PHP, bukan dari string mentah.
+
+`SuratJalan::list()`'s `q` nyari lintas `no_surat_jalan`/`tujuan`/`penerima`/nama supir
+(`u.nama_lengkap`/`s.nama_eksternal`) **dan** no SPK yang disentuh (`EXISTS` ke
+`ekspedisi_t_surat_jalan_item` JOIN `t_penjualan_detail_performa`) — jadi bisa cari 1 SJ lewat
+nomor SPK-nya juga, tidak cuma no_surat_jalan.
+
+**Jebakan PDO yang ditemukan waktu nulis ini (catat buat query lain ke depan):**
+`Database.php` set `PDO::ATTR_EMULATE_PREPARES => false` (native prepares) — beda dari mode
+emulated, native prepares TIDAK mengizinkan named placeholder yang sama dipakai lebih dari 1x
+dalam 1 query (mis. `WHERE a LIKE :q OR b LIKE :q`), throw
+`SQLSTATE[HY093]: Invalid parameter number`. Solusinya: kasih nama beda tiap occurrence
+(`:q1`, `:q2`, dst) meski nilainya sama persis, bind semuanya ke value yang sama. Dites langsung
+ke database produksi setelah fix (search "amb-c-11" balikin 7 hasil yang benar, termasuk baris
+hasil disambiguasi `"... (migrasi-2)"` di atas).
 
 #### Alur validasi (2026-08-19)
 
