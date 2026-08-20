@@ -19,7 +19,7 @@ use PDO;
  * pernah menulis balik ke surat_jalan.
  *
  * Sisi `ekspedisi_t_surat_jalan_item` SENGAJA cuma hitung baris dari SJ
- * ber-`asal='native'` (lihat database/09_tambah_kolom_asal_surat_jalan.sql &
+ * ber-`asal='native'` (kolom `asal` di database/01_schema.sql &
  * migrate_legacy_surat_jalan.php) -- baris hasil migrasi data historis
  * (`asal='migrasi_legacy'`) sudah kehitung lewat sisi `surat_jalan` di atas
  * (itu justru SUMBER datanya sebelum dimigrasi), jadi kalau ikut dihitung

@@ -6,6 +6,7 @@ namespace App\Controllers;
 
 use App\Database;
 use App\Support\PenjualanItemLookup;
+use App\Support\PhotoStorage;
 use App\Support\SuratJalan;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -82,15 +83,28 @@ class SuratJalanController extends Controller
      * terpisah lagi lewat body['penjualan_id']). Kalau `items` kosong, tetap
      * boleh bikin SJ freeform tanpa SPK sama sekali (mis. sampel/transfer
      * internal) -- `jumlah_kirim` manual dari body.
+     *
+     * **Auto-bikin trip utk supir INTERNAL (2026-08-20)** -- dulu supir
+     * dapat tugas checkpoint foto lewat langkah terpisah "Plot SPK ke Supir"
+     * (bikin `ekspedisi_t_trip` SEBELUM SJ ada). Langkah itu DIHAPUS (tab
+     * "Ekspedisi" sekarang murni monitoring, lihat AdminController::drivers())
+     * -- assignment supir sekarang cukup lewat `driver_id` di SJ ini. Supaya
+     * supir INTERNAL tetap bisa lihat tugasnya & checkpoint foto sendiri
+     * lewat app-nya, `store()` OTOMATIS bikin trip kalau `trip_id` tidak
+     * dikirim eksplisit & supirnya internal (lihat blok di bawah) -- supir
+     * EKSTERNAL sengaja TIDAK dibikinkan trip (tidak bisa login/checkpoint
+     * apa pun), status "sedang mengirim"-nya cukup dibaca dari status SJ ini
+     * langsung.
      */
     public function store(Request $request, Response $response): Response
     {
         $pdo = Database::connection();
         $body = (array) $request->getParsedBody();
 
-        if (!empty($body['trip_id'])) {
+        $tripId = !empty($body['trip_id']) ? (int) $body['trip_id'] : null;
+        if ($tripId !== null) {
             $exists = $pdo->prepare('SELECT 1 FROM ekspedisi_t_trip WHERE id = :id LIMIT 1');
-            $exists->execute(['id' => (int) $body['trip_id']]);
+            $exists->execute(['id' => $tripId]);
             if (!$exists->fetchColumn()) {
                 return $this->error($response, 'Trip tidak ditemukan.');
             }
@@ -104,13 +118,16 @@ class SuratJalanController extends Controller
         if (empty($body['driver_id'])) {
             return $this->error($response, 'Supir wajib dipilih.');
         }
-        $exists = $pdo->prepare('SELECT 1 FROM ekspedisi_m_supir WHERE id = :id LIMIT 1');
-        $exists->execute(['id' => (int) $body['driver_id']]);
-        if (!$exists->fetchColumn()) {
+        $driverId = (int) $body['driver_id'];
+        $driverStmt = $pdo->prepare('SELECT tipe FROM ekspedisi_m_supir WHERE id = :id LIMIT 1');
+        $driverStmt->execute(['id' => $driverId]);
+        $driverTipe = $driverStmt->fetchColumn();
+        if ($driverTipe === false) {
             return $this->error($response, 'Supir tidak ditemukan.');
         }
 
         $items = [];
+        $touchedSpkIds = [];
         $jumlahKirim = !empty($body['jumlah_kirim']) ? (int) $body['jumlah_kirim'] : null;
 
         if (!empty($body['items']) && is_array($body['items'])) {
@@ -128,6 +145,7 @@ class SuratJalanController extends Controller
                     return $this->error($response, "Jumlah kirim {$line['penjualan_jenis']} ({$qty}) melebihi sisa yang belum terkirim ({$line['sisa']}).");
                 }
                 $items[] = ['penjualan_detail_performa_id' => $lineId, 'jumlah_kirim' => $qty];
+                $touchedSpkIds[$line['penjualan_id']] = true;
             }
 
             if (empty($items)) {
@@ -136,9 +154,28 @@ class SuratJalanController extends Controller
             $jumlahKirim = array_sum(array_column($items, 'jumlah_kirim'));
         }
 
+        if ($tripId === null && $driverTipe === 'internal') {
+            $spkIds = array_keys($touchedSpkIds);
+            $tripInsert = $pdo->prepare(
+                "INSERT INTO ekspedisi_t_trip (driver_id, destination, penjualan_id, status, started_at)
+                 VALUES (:driver_id, :destination, :penjualan_id, 'in_progress', :now)"
+            );
+            $tripInsert->execute([
+                'driver_id' => $driverId,
+                'destination' => $body['tujuan'] ?? null,
+                // Cuma diisi kalau SJ ini nyentuh TEPAT 1 SPK -- kalau lintas
+                // beberapa SPK sekaligus, tautan logis trip.penjualan_id
+                // (singular) tidak cukup mewakili, biarkan NULL (SPK-nya
+                // tetap lengkap tercatat per-item di ekspedisi_t_surat_jalan_item).
+                'penjualan_id' => count($spkIds) === 1 ? $spkIds[0] : null,
+                'now' => date('Y-m-d H:i:s'),
+            ]);
+            $tripId = (int) $pdo->lastInsertId();
+        }
+
         $id = SuratJalan::create($pdo, [
-            'trip_id' => !empty($body['trip_id']) ? (int) $body['trip_id'] : null,
-            'driver_id' => (int) $body['driver_id'],
+            'trip_id' => $tripId,
+            'driver_id' => $driverId,
             'tujuan' => $body['tujuan'] ?? null,
             'kendaraan' => $body['kendaraan'] ?? null,
             'plat' => $body['plat'] ?? null,
@@ -169,7 +206,7 @@ class SuratJalanController extends Controller
             return $this->error($response, 'Surat jalan tidak ditemukan.', 404);
         }
 
-        $relativePath = $this->savePhoto($request, $id);
+        $relativePath = $this->savePhoto($request, $id, 'bukti');
         if ($relativePath === null) {
             return $this->error($response, 'File photo wajib diunggah, maksimal 8MB.');
         }
@@ -200,7 +237,7 @@ class SuratJalanController extends Controller
             return $this->error($response, 'Surat jalan ini sudah tervalidasi.', 422);
         }
 
-        $relativePath = $this->savePhoto($request, $id);
+        $relativePath = $this->savePhoto($request, $id, 'validasi');
         if ($relativePath === null) {
             return $this->error($response, 'Foto SJ final wajib diunggah, maksimal 8MB.');
         }
@@ -234,27 +271,18 @@ class SuratJalanController extends Controller
     /**
      * Simpan file upload 'photo' dari multipart request ke
      * public/uploads/sj/{id}/, dipakai bareng oleh uploadPhoto() & validasi()
-     * -- cuma beda field mana yang di-update di ekspedisi_t_surat_jalan.
+     * -- cuma beda `$kind` (nama file, jadi juga beda field mana yang
+     * di-update di ekspedisi_t_surat_jalan) & konversi WEBP (lihat
+     * App\Support\PhotoStorage). `$kind`: 'bukti' (foto_surat_jalan, checkpoint
+     * lapangan) atau 'validasi' (foto_validasi, closing bertandatangan) --
+     * disimpan sbg nama file berbeda supaya tidak saling menimpa DAN jelas
+     * perannya cuma dari nama filenya di disk.
      * Return path relatif, atau null kalau tidak ada file/melebihi batas ukuran.
      */
-    private function savePhoto(Request $request, int $id): ?string
+    private function savePhoto(Request $request, int $id, string $kind): ?string
     {
-        $files = $request->getUploadedFiles();
-        $photo = $files['photo'] ?? null;
-        if ($photo === null || $photo->getError() !== UPLOAD_ERR_OK) {
-            return null;
-        }
-        if ($photo->getSize() > 8 * 1024 * 1024) {
-            return null;
-        }
-
         $dir = dirname(__DIR__, 2) . "/public/uploads/sj/{$id}";
-        if (!is_dir($dir)) {
-            mkdir($dir, 0755, true);
-        }
-        $filename = 'sj_' . time() . '.jpg';
-        $photo->moveTo($dir . '/' . $filename);
 
-        return "uploads/sj/{$id}/{$filename}";
+        return PhotoStorage::save($request, 'photo', $dir, "uploads/sj/{$id}", $kind);
     }
 }

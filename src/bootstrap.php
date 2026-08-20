@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 use App\Controllers\AdminController;
 use App\Controllers\AuthController;
+use App\Controllers\ConfigController;
 use App\Controllers\DriverController;
+use App\Controllers\EkspedisiController;
 use App\Controllers\SuratJalanController;
 use App\Database;
 use App\Middleware\AdminOnlyMiddleware;
@@ -63,10 +65,16 @@ $auth = new AuthController();
 $driver = new DriverController();
 $admin = new AdminController();
 $suratJalan = new SuratJalanController();
+$ekspedisi = new EkspedisiController();
+$config = new ConfigController();
 
 $app->post('/login', [$auth, 'login']);
+// Publik (di LUAR AuthMiddleware, sama seperti /login) -- app perlu bisa cek
+// versi SEBELUM/TANPA tergantung sesi valid (mis. token sudah expired, atau
+// dicek sesaat app baru dibuka sebelum sempat login).
+$app->post('/config/check-version', [$config, 'checkVersion']);
 
-$app->group('', function ($group) use ($auth, $driver, $admin, $suratJalan) {
+$app->group('', function ($group) use ($auth, $driver, $admin, $suratJalan, $ekspedisi) {
     $group->post('/logout', [$auth, 'logout']);
 
     // Dipertahankan untuk kompatibilitas kontrak lama (driver-apk versi awal
@@ -100,18 +108,22 @@ $app->group('', function ($group) use ($auth, $driver, $admin, $suratJalan) {
     $group->post('/driver/trip/{trip}/complete', [$driver, 'completeTrip']);
 
     // --- Admin / Dispatcher (digerbangi AdminOnlyMiddleware juga) ---
-    $group->group('', function ($adminGroup) use ($admin, $suratJalan) {
+    $group->group('', function ($adminGroup) use ($admin, $suratJalan, $ekspedisi) {
         $adminGroup->get('/admin/drivers', [$admin, 'drivers']);
         $adminGroup->post('/admin/drivers', [$admin, 'createDriver']);
         $adminGroup->get('/admin/drivers/{driver}', [$admin, 'driverDetail']);
+        $adminGroup->post('/admin/drivers/{driver}/documents', [$admin, 'uploadDriverDocuments']);
         $adminGroup->post('/admin/drivers/{driver}/trip', [$admin, 'createTrip']);
         $adminGroup->post('/admin/trips/{trip}/complete', [$admin, 'completeTripManual']);
         $adminGroup->get('/admin/surat-jalan/{no}', [$admin, 'lookupSuratJalan']);
-        $adminGroup->get('/admin/spk-ready-kirim', [$admin, 'spkReadyKirim']);
         $adminGroup->get('/admin/spk-belum-sj', [$admin, 'spkBelumSj']);
-        $adminGroup->get('/admin/ekspedisi', [$admin, 'listEkspedisi']);
         $adminGroup->post('/admin/trips/{trip}/pengajuan-biaya', [$admin, 'createPengajuanBiaya']);
         $adminGroup->get('/admin/trips/{trip}/pengajuan-biaya', [$admin, 'listPengajuanBiaya']);
+
+        // --- Master data perusahaan ekspedisi eksternal (ekspedisi_m_ekspedisi) ---
+        $adminGroup->get('/admin/ekspedisi', [$ekspedisi, 'index']);
+        $adminGroup->post('/admin/ekspedisi', [$ekspedisi, 'store']);
+        $adminGroup->put('/admin/ekspedisi/{id}', [$ekspedisi, 'update']);
 
         // --- Modul surat jalan MILIK app ini (ekspedisi_t_surat_jalan) ---
         $adminGroup->get('/admin/sj/spk/{penjualan_id}/items', [$suratJalan, 'spkItems']);

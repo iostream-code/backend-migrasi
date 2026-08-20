@@ -80,6 +80,7 @@ class SuratJalan
 
         foreach ($rows as &$row) {
             $row['items'] = self::items($pdo, (int) $row['id']);
+            $row['client_names'] = self::resolveClientNames($pdo, $row);
         }
         unset($row);
 
@@ -102,6 +103,7 @@ class SuratJalan
             return null;
         }
         $row['items'] = self::items($pdo, $id);
+        $row['client_names'] = self::resolveClientNames($pdo, $row);
 
         return $row;
     }
@@ -138,6 +140,49 @@ class SuratJalan
         $stmt->execute(['surat_jalan_id' => $suratJalanId]);
 
         return $stmt->fetchAll();
+    }
+
+    /**
+     * Nama klien (m_client.client_nama, READ-ONLY ke backend-production) dari
+     * SPK yang disentuh SJ ini -- dari items() (jalur manual, breakdown per
+     * lini produk, bisa lintas beberapa SPK/klien sekaligus) kalau ada,
+     * fallback ke kolom penjualan_id di header (jalur trip-linked lama,
+     * selalu 1 SPK, tidak punya baris item) kalau items kosong. Dipakai
+     * frontend buat kolom "Klien" di tabel SJ (GET /admin/sj) -- ditampilkan
+     * gabungan "Klien 1 | Klien 2" kalau lebih dari 1 SPK/klien tersentuh.
+     */
+    private static function resolveClientNames(PDO $pdo, array $row): array
+    {
+        $penjualanIds = array_values(array_unique(array_filter(array_map(
+            static fn (array $item) => $item['penjualan_id'] ?? null,
+            $row['items'] ?? []
+        ))));
+
+        if (!$penjualanIds && !empty($row['penjualan_id'])) {
+            $penjualanIds = [$row['penjualan_id']];
+        }
+
+        if (!$penjualanIds) {
+            return [];
+        }
+
+        $placeholders = [];
+        $params = [];
+        foreach ($penjualanIds as $i => $penjualanId) {
+            $key = "pid{$i}";
+            $placeholders[] = ":{$key}";
+            $params[$key] = $penjualanId;
+        }
+
+        $stmt = $pdo->prepare(
+            'SELECT DISTINCT c.client_nama
+             FROM t_penjualan_header p
+             JOIN m_client c ON c.client_id = p.client_id
+             WHERE p.penjualan_id IN (' . implode(',', $placeholders) . ')'
+        );
+        $stmt->execute($params);
+
+        return array_column($stmt->fetchAll(), 'client_nama');
     }
 
     /**

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Database;
+use App\Support\PhotoStorage;
 use App\Support\SupirProfile;
 use App\Support\SuratJalan;
 use App\Support\TripPresenter;
@@ -138,23 +139,15 @@ class DriverController extends Controller
             return $this->error($response, 'type harus salah satu dari: ' . implode(', ', TripPresenter::STEPS));
         }
 
-        $files = $request->getUploadedFiles();
-        $photo = $files['photo'] ?? null;
-        if ($photo === null || $photo->getError() !== UPLOAD_ERR_OK) {
-            return $this->error($response, 'File photo wajib diunggah.');
-        }
-        if ($photo->getSize() > 8 * 1024 * 1024) {
-            return $this->error($response, 'Ukuran foto maksimal 8MB.');
-        }
-
         $tripId = (int) $trip['id'];
         $dir = dirname(__DIR__, 2) . "/public/uploads/trips/{$tripId}";
-        if (!is_dir($dir)) {
-            mkdir($dir, 0755, true);
+        // Nama file = $type ("berangkat"/"serah_terima"/"sj") -- bukan
+        // timestamp, jadi re-upload checkpoint yang sama TIMPA file lama di
+        // disk (konsisten dgn UNIQUE trip_id+type di DB, bukan numpuk file).
+        $relativePath = PhotoStorage::save($request, 'photo', $dir, "uploads/trips/{$tripId}", $type);
+        if ($relativePath === null) {
+            return $this->error($response, 'File photo wajib diunggah, maksimal 8MB.');
         }
-        $filename = $type . '_' . time() . '.jpg';
-        $photo->moveTo($dir . '/' . $filename);
-        $relativePath = "uploads/trips/{$tripId}/{$filename}";
 
         // Satu checkpoint cuma boleh py 1 foto aktif per trip -- upload ulang
         // checkpoint yang sama menimpa baris lama (UNIQUE trip_id+type di schema.sql).
