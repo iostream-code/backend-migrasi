@@ -1,13 +1,39 @@
-# ekspedisi-apk-backend
+# backend-migrasi
 
-Backend aplikasi **Ekspedisi** (dulu bernama "driver-apk" / tracking supir — sedang berkembang
-jadi aplikasi ekspedisi yang lebih luas, rencana ke depan juga mencakup modul manajemen surat
-jalan, menyusul terpisah). Frontend-nya [`ekspedisi-apk`](../ekspedisi-apk) (Cordova). **Slim 4,
-tanpa ORM, tanpa migration** — PDO + SQL mentah langsung, skema tabel didefinisikan di
-[`database/`](database) (file bernomor urut, dijalankan manual sekali per file). Project
-**terpisah** dari `backend-production`, tapi **login pakai akun pegawai yang sama**
-(`shared_m_users`) dan tabel domainnya (`ekspedisi_*`) hidup di **database produksi yang sama**
-— cuma dikelola dari codebase ini.
+**Ladang migrasi bertahap** backend internal Koperindo, keluar dari monolith `backend-production`
+(Laravel 5.6/PHP 7.1) — satu Slim 4 app, **tanpa ORM, tanpa migration** (PDO + SQL mentah
+langsung, skema tabel didefinisikan di [`database/`](database), satu subfolder per modul, file
+bernomor urut dijalankan manual). **Terpisah** dari `backend-production` sebagai codebase, tapi
+**login pakai akun pegawai yang sama** (`shared_m_users`) dan tabel domain tiap modul hidup di
+**database produksi yang sama** — jadi tidak butuh cutover auth big-bang per modul yang dipindah,
+lihat bagian "Modul" di bawah.
+
+Repo ini dulu bernama `ekspedisi-apk-backend` (isinya cuma modul Ekspedisi). Direname
+2026-08-21 setelah disepakati jadi rumah bersama utk migrasi modul-modul lain juga (Inventory
+duluan, lihat "Modul" di bawah) -- **bukan pivot ganti domain**, modul Ekspedisi yang sudah ada
+TIDAK berubah sama sekali (path/behavior identik, cuma lokasi file & namespace class-nya yang
+pindah, lihat `src/Ekspedisi/`).
+
+## Modul
+
+- **Ekspedisi** (`src/Ekspedisi/`) — tracking supir (internal & eksternal) + manajemen surat
+  jalan. **Live**, dipakai [`ekspedisi-apk`](../ekspedisi-apk) (Cordova). Route-nya **flat, tanpa
+  prefix** (`/login`, `/admin/sj`, `/driver/me`, dst) -- historis, dari sebelum repo ini
+  multi-modul, TIDAK diubah supaya frontend yang sudah live tidak putus.
+- **Inventory** (`src/Inventory/`) — migrasi bertahap dari `backend-production`
+  (`app/Http/Controllers/API/Inventory/*`, `Route::prefix('inventory')` di `routes/api.php`
+  sana). **Baru skeleton** (`GET /inventory/ping` doang, lihat `src/Inventory/routes.php`) --
+  endpoint bisnis aslinya (Material/Opname/Stock In/Stock Out/Home Dashboard) belum dipindah.
+  Route-nya **diprefix `/inventory`** (beda dari Ekspedisi) supaya dua modul tidak pernah
+  bentrok path.
+
+Modul baru = folder `src/<NamaModul>/` baru (routes.php + Controllers/) + satu baris mount di
+`src/bootstrap.php`. Infra generik (`Database.php`, `Support/Jwt.php`, `Support/PhotoStorage.php`,
+`Middleware/AuthMiddleware.php`, `Controllers/Controller.php`) tetap di `src/` root, dipakai
+bersama semua modul -- lihat "Struktur" di bawah. Auth/Config **TIDAK** digeneralisasi jadi satu
+class bersama walau kelihatan generic (pola yang sama dipakai `backend-production`: tiap app py
+`config_id`/resolusi role sendiri) -- konsisten dgn konvensi workspace ini, duplikasi kecil
+lebih disukai drpd abstraksi paksa utk hal yang beda bentuk per modul.
 
 ## Kenapa bukan Laravel/Lumen?
 
@@ -661,45 +687,63 @@ tombol "Validasi" (foto final) ada di halaman daftar `adminSuratJalan.js`).
 
 ## Struktur
 
+Restrukturisasi multi-modul 2026-08-21 (lihat "Modul" di atas) -- infra generik di `src/` root,
+tiap domain di `src/<Modul>/` sendiri dgn `routes.php` + `Controllers/` + `Support/` +
+`Middleware/` (kalau perlu) masing-masing.
+
 ```
-ekspedisi-apk-backend/
-├── database/                 # SQL mentah, satu file per langkah, dijalankan manual URUT NOMOR
-│   ├── 01_schema.sql            # CREATE TABLE 9 tabel ekspedisi_* (master ekspedisi lokal, supir
-│   │                              # +dokumen KTP/SIM/STNK, modul surat jalan +breakdown produk
-│   │                              # +alur validasi) -- konsolidasi KETIGA (2026-08-20), bukan
-│   │                              # migration, lihat header file
-│   ├── 02_seed_admin_access.sql  # seed whitelist admin/dispatcher (cari by username, idempotent)
-│   ├── 03_seed_dummy_drivers.sql # pre-provision profil supir INTERNAL dummy (cari by username, idempotent)
-│   ├── migrate_legacy_surat_jalan.php # script DATA sekali-jalan (BUKAN skema) -- migrasi surat_jalan lama, lihat bagian di atas
-│   └── migrate_m_expedisi_ke_ekspedisi_m_ekspedisi.php # script DATA sekali-jalan, OPSIONAL -- duplikasi m_expedisi, lihat bagian "Master perusahaan ekspedisi eksternal"
+backend-migrasi/
+├── database/
+│   ├── ekspedisi/                # SQL mentah modul Ekspedisi, satu file per langkah, URUT NOMOR
+│   │   ├── 01_schema.sql            # CREATE TABLE 9 tabel ekspedisi_* (master ekspedisi lokal, supir
+│   │   │                              # +dokumen KTP/SIM/STNK, modul surat jalan +breakdown produk
+│   │   │                              # +alur validasi) -- konsolidasi KETIGA (2026-08-20), bukan
+│   │   │                              # migration, lihat header file
+│   │   ├── 02_seed_admin_access.sql  # seed whitelist admin/dispatcher (cari by username, idempotent)
+│   │   ├── 03_seed_dummy_drivers.sql # pre-provision profil supir INTERNAL dummy (cari by username, idempotent)
+│   │   ├── migrate_legacy_surat_jalan.php # script DATA sekali-jalan (BUKAN skema) -- migrasi surat_jalan lama, lihat bagian di atas
+│   │   └── migrate_m_expedisi_ke_ekspedisi_m_ekspedisi.php # script DATA sekali-jalan, OPSIONAL -- duplikasi m_expedisi, lihat bagian "Master perusahaan ekspedisi eksternal"
+│   └── inventory/                # BELUM ADA -- tabel modul Inventory sudah live di
+│                                  # backend-production, migrasi ini soal kode dulu, bukan skema.
+│                                  # Folder ini dibuat kalau porting nanti butuh skema baru/beda.
 ├── public/
 │   ├── index.php             # front controller
 │   └── uploads/{trips,sj,drivers}/{id}/  # foto checkpoint/SJ/dokumen supir, disajikan langsung sbg file statis
 └── src/
-    ├── bootstrap.php          # bangun Slim App: middleware, CORS, error handler, routes
-    ├── Database.php            # wrapper koneksi PDO (singleton)
+    ├── bootstrap.php          # composition root: bangun Slim App, middleware global (CORS,
+    │                            # error handler), lalu mount routes.php tiap modul. TIDAK berisi
+    │                            # route table -- itu tanggung jawab tiap modul sendiri.
+    ├── Database.php            # wrapper koneksi PDO (singleton) -- SHARED semua modul
     ├── Support/
-    │   ├── Jwt.php               # terbitkan & verifikasi token HS256
-    │   ├── SupirProfile.php       # ambil/buat baris ekspedisi_m_supir (dipakai Auth & DriverController)
-    │   ├── TripPresenter.php      # format baris ekspedisi_t_trip -> shape JSON, konstanta STEPS
-    │   ├── SuratJalanLookup.php   # query READ-ONLY ke surat_jalan (integrasi, lihat bagian di atas)
-    │   ├── SpkReadyKirim.php      # query READ-ONLY ke t_penjualan_header -- SPK ready-kirim yg belum ada SJ
-    │   ├── Ekspedisi.php          # CRUD ekspedisi_m_ekspedisi -- master perusahaan ekspedisi eksternal, MILIK app ini
-    │   ├── PengajuanBiaya.php     # create/list ekspedisi_t_pengajuan_biaya
-    │   ├── PenjualanItemLookup.php # query READ-ONLY ke t_penjualan_detail_performa -- sisa qty per lini produk SPK
-    │   ├── SuratJalan.php         # CRUD ekspedisi_t_surat_jalan (+ item breakdown) MILIK app ini
-    │   └── PhotoStorage.php       # simpan foto upload -> WEBP (GD, fallback apa adanya), dipakai Driver & SuratJalanController
+    │   ├── Jwt.php               # terbitkan & verifikasi token HS256 -- SHARED semua modul
+    │   └── PhotoStorage.php      # simpan foto upload -> WEBP (GD, fallback apa adanya) -- SHARED
     ├── Middleware/
-    │   ├── AuthMiddleware.php      # cek Authorization: Bearer <token>, taruh user_id/role di request
-    │   └── AdminOnlyMiddleware.php  # tolak 403 kalau role token bukan 'admin'
-    └── Controllers/
-        ├── Controller.php     # helper json()/error() dipakai semua controller
-        ├── AuthController.php  # login, logout
-        ├── DriverController.php  # /driver/* (nama class dipertahankan -- soal "supir", bukan bagian rename ekspedisi_*)
-        ├── AdminController.php   # /admin/*
-        ├── SuratJalanController.php # /admin/sj* (modul surat jalan MILIK app ini)
-        ├── EkspedisiController.php # /admin/ekspedisi* (master perusahaan ekspedisi eksternal MILIK app ini)
-        └── ConfigController.php   # /config/check-version (cek versi app, lihat bagian "Cek versi app" di bawah)
+    │   └── AuthMiddleware.php    # cek Authorization: Bearer <token>, taruh user_id/role di request -- SHARED
+    ├── Controllers/
+    │   └── Controller.php        # helper json()/error() dipakai semua controller -- SHARED
+    ├── Ekspedisi/                 # MODUL -- lihat "Modul" di atas, path/behavior TIDAK berubah
+    │   ├── routes.php               # route table modul ini (dipindah dari bootstrap.php lama)
+    │   ├── Support/
+    │   │   ├── SupirProfile.php       # ambil/buat baris ekspedisi_m_supir (dipakai Auth & DriverController)
+    │   │   ├── TripPresenter.php      # format baris ekspedisi_t_trip -> shape JSON, konstanta STEPS
+    │   │   ├── SuratJalanLookup.php   # query READ-ONLY ke surat_jalan (integrasi, lihat bagian di atas)
+    │   │   ├── SpkReadyKirim.php      # query READ-ONLY ke t_penjualan_header -- SPK ready-kirim yg belum ada SJ
+    │   │   ├── Ekspedisi.php          # CRUD ekspedisi_m_ekspedisi -- master perusahaan ekspedisi eksternal, MILIK modul ini
+    │   │   ├── PengajuanBiaya.php     # create/list ekspedisi_t_pengajuan_biaya
+    │   │   ├── PenjualanItemLookup.php # query READ-ONLY ke t_penjualan_detail_performa -- sisa qty per lini produk SPK
+    │   │   └── SuratJalan.php         # CRUD ekspedisi_t_surat_jalan (+ item breakdown) MILIK modul ini
+    │   ├── Middleware/
+    │   │   └── AdminOnlyMiddleware.php  # tolak 403 kalau role token bukan 'admin'
+    │   └── Controllers/
+    │       ├── AuthController.php  # login, logout (isAdmin() query ekspedisi_m_admin_access -- MILIK modul ini, bukan generic)
+    │       ├── DriverController.php  # /driver/* (nama class dipertahankan -- soal "supir", bukan bagian rename ekspedisi_*)
+    │       ├── AdminController.php   # /admin/*
+    │       ├── SuratJalanController.php # /admin/sj* (modul surat jalan MILIK modul ini)
+    │       ├── EkspedisiController.php # /admin/ekspedisi* (master perusahaan ekspedisi eksternal MILIK modul ini)
+    │       └── ConfigController.php   # /config/check-version, CONFIG_ID='VERSION_EKSPEDISI_PUSAT' (MILIK modul ini)
+    └── Inventory/                  # MODUL BARU -- skeleton doang, lihat "Modul" di atas
+        ├── routes.php                # GET /inventory/ping placeholder
+        └── Controllers/               # kosong, .gitkeep
 ```
 
 ## Performa `GET /admin/sj` -- N+1 dibatch (2026-08-20)

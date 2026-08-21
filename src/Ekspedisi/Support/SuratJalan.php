@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Support;
+namespace App\Ekspedisi\Support;
 
 use PDO;
 
@@ -378,7 +378,7 @@ class SuratJalan
      * array [{penjualan_detail_performa_id, jumlah_kirim}, ...], BOLEH berisi
      * lini produk dari beberapa SPK berbeda sekaligus (lihat
      * SuratJalanController::store(), yang sudah validasi sisa qty tiap item
-     * SATU-SATU lewat App\Support\PenjualanItemLookup::findLine() sebelum
+     * SATU-SATU lewat App\Ekspedisi\Support\PenjualanItemLookup::findLine() sebelum
      * sampai sini -- makanya $data['penjualan_id'] SENGAJA tidak ada lagi di
      * sini, SPK-nya cuma bisa diketahui per-item lewat items()).
      */

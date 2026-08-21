@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Support;
+namespace App\Ekspedisi\Support;
 
 use PDO;
 
@@ -49,7 +49,7 @@ class SpkReadyKirim
      * Begitu SPK ini tersentuh SALAH SATU dari dua jalur itu (bahkan
      * sebagian), hilang dari daftar ini (sisa qty per lini produk yang belum
      * terkirim tetap kelihatan lewat "Cek SPK" di form Buat Surat Jalan --
-     * lihat App\Support\PenjualanItemLookup).
+     * lihat App\Ekspedisi\Support\PenjualanItemLookup).
      *
      * $search (2026-08-20, opsional) -- cocokkan ke nama client atau no SPK.
      * $page/$perPage -- LIMIT/OFFSET, di-cast int eksplisit sebelum

@@ -1,6 +1,6 @@
 # Deploy ke shared hosting
 
-Panduan ini utk deploy `ekspedisi-apk-backend` (Slim 4 / PHP 8.1, tanpa ORM, PDO
+Panduan ini utk deploy `backend-migrasi` (Slim 4 / PHP 8.1, tanpa ORM, PDO
 manual -- lihat README.md) ke shared hosting (cPanel/DirectAdmin/dsb). Mengikuti
 pola deploy manual (zip/upload) yang sudah dipakai `backend-production` &
 aplikasi Cordova legacy di workspace ini -- **bukan** CI/CD lewat git push.
@@ -44,7 +44,7 @@ Opsi upload (pilih salah satu, sesuai fasilitas hosting):
   langsung di server, di folder di luar `public_html` kalau bisa (supaya kode
   yang bukan `public/` tidak otomatis ke-serve web, lihat langkah 5).
 - **Zip upload (paling umum di shared hosting murah)**: dari mesin dev,
-  `git archive -o ekspedisi-apk-backend.zip HEAD` (cuma isi yang sudah
+  `git archive -o backend-migrasi.zip HEAD` (cuma isi yang sudah
   di-commit, `vendor/`/`.env` otomatis tidak ikut karena di-gitignore) lalu
   upload lewat File Manager cPanel / FTP, extract di server.
 
@@ -101,7 +101,7 @@ hosting) -- isinya kredensial DB + JWT secret.
 **Opsi A (disarankan) -- hosting bisa atur document root custom:**
 
 Di cPanel: *Domains* / *Subdomains* -> saat bikin subdomain, isi *Document
-Root* langsung ke `.../ekspedisi-apk-backend/public` (bukan folder repo-nya).
+Root* langsung ke `.../backend-migrasi/public` (bukan folder repo-nya).
 Dengan ini, `src/`, `vendor/`, `database/`, `.env`, `composer.json` semua
 otomatis TIDAK bisa diakses lewat URL sama sekali (di luar webroot) --
 paling aman, tidak perlu proteksi tambahan.

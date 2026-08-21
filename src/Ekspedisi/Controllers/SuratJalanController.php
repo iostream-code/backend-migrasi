@@ -2,12 +2,13 @@
 
 declare(strict_types=1);
 
-namespace App\Controllers;
+namespace App\Ekspedisi\Controllers;
 
+use App\Controllers\Controller;
 use App\Database;
-use App\Support\PenjualanItemLookup;
+use App\Ekspedisi\Support\PenjualanItemLookup;
 use App\Support\PhotoStorage;
-use App\Support\SuratJalan;
+use App\Ekspedisi\Support\SuratJalan;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 

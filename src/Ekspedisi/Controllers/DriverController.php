@@ -2,13 +2,14 @@
 
 declare(strict_types=1);
 
-namespace App\Controllers;
+namespace App\Ekspedisi\Controllers;
 
+use App\Controllers\Controller;
 use App\Database;
 use App\Support\PhotoStorage;
-use App\Support\SupirProfile;
-use App\Support\SuratJalan;
-use App\Support\TripPresenter;
+use App\Ekspedisi\Support\SupirProfile;
+use App\Ekspedisi\Support\SuratJalan;
+use App\Ekspedisi\Support\TripPresenter;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 

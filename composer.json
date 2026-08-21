@@ -1,6 +1,6 @@
 {
-    "name": "koperindo/ekspedisi-apk-backend",
-    "description": "Backend aplikasi Ekspedisi -- tracking supir (internal & eksternal) + rencana modul surat jalan (Slim 4, tanpa ORM/migration -- lihat README.md & database/)",
+    "name": "koperindo/backend-migrasi",
+    "description": "Ladang migrasi bertahap backend internal Koperindo, keluar dari monolith backend-production (Slim 4, tanpa ORM/migration). Modul Ekspedisi (tracking supir + surat jalan) sudah live; Inventory sedang berjalan -- lihat README.md & database/",
     "type": "project",
     "require": {
         "php": "^8.1",

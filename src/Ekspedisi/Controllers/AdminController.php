@@ -2,16 +2,17 @@
 
 declare(strict_types=1);
 
-namespace App\Controllers;
+namespace App\Ekspedisi\Controllers;
 
+use App\Controllers\Controller;
 use App\Database;
-use App\Support\Ekspedisi;
-use App\Support\PengajuanBiaya;
+use App\Ekspedisi\Support\Ekspedisi;
+use App\Ekspedisi\Support\PengajuanBiaya;
 use App\Support\PhotoStorage;
-use App\Support\SpkReadyKirim;
-use App\Support\SupirProfile;
-use App\Support\SuratJalanLookup;
-use App\Support\TripPresenter;
+use App\Ekspedisi\Support\SpkReadyKirim;
+use App\Ekspedisi\Support\SupirProfile;
+use App\Ekspedisi\Support\SuratJalanLookup;
+use App\Ekspedisi\Support\TripPresenter;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 
