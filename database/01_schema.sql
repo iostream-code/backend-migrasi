@@ -202,7 +202,7 @@ CREATE TABLE `ekspedisi_t_pengajuan_biaya` (
 -- `surat_jalan` asalnya sudah mewakilinya).
 CREATE TABLE `ekspedisi_t_surat_jalan` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `no_surat_jalan` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Auto-generated setelah insert (format SJ-YYYYMMDD-xxxx), lihat App\\Support\\SuratJalan::assignNomor() -- kecuali baris migrasi_legacy, no aslinya dipertahankan',
+  `no_surat_jalan` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Auto-generated setelah insert (format SJ_YYYYMMDD_xxxx, sebelum 2026-08-21 separatornya "-"), lihat App\\Support\\SuratJalan::assignNomor() -- kecuali baris migrasi_legacy, no aslinya dipertahankan',
   `trip_id` bigint unsigned DEFAULT NULL COMMENT 'FK ke ekspedisi_t_trip.id -- NULL kalau SJ dibuat manual admin tanpa trip',
   `penjualan_id` varchar(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Tautan logis opsional ke t_penjualan_header.penjualan_id (backend-production) -- cuma keisi dari jalur trip-linked, lihat catatan di atas',
   `driver_id` bigint unsigned DEFAULT NULL COMMENT 'FK ke ekspedisi_m_supir.id -- NULL utk baris migrasi_legacy (tidak match andal ke supir manapun)',

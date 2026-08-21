@@ -95,9 +95,13 @@ class SuratJalan
         $ids = array_column($rows, 'id');
         $itemsByRowId = self::batchItemsByRowId($pdo, $ids);
 
+        $tripIds = array_values(array_unique(array_filter(array_column($rows, 'trip_id'))));
+        $tripPhotosByTripId = self::batchTripPhotosByTripId($pdo, $tripIds);
+
         $penjualanIdsNeeded = [];
         foreach ($rows as &$row) {
             $row['items'] = $itemsByRowId[(int) $row['id']] ?? [];
+            $row['trip_photos'] = $row['trip_id'] ? ($tripPhotosByTripId[(int) $row['trip_id']] ?? []) : [];
             $rowPenjualanIds = self::penjualanIdsForRow($row);
             foreach ($rowPenjualanIds as $pid) {
                 $penjualanIdsNeeded[$pid] = true;
@@ -133,6 +137,9 @@ class SuratJalan
             return null;
         }
         $row['items'] = self::items($pdo, $id);
+        $row['trip_photos'] = $row['trip_id']
+            ? (self::batchTripPhotosByTripId($pdo, [(int) $row['trip_id']])[(int) $row['trip_id']] ?? [])
+            : [];
         $row['client_names'] = self::resolveClientNames($pdo, $row);
 
         return $row;
@@ -227,6 +234,45 @@ class SuratJalan
             $sjId = (int) $row['surat_jalan_id'];
             unset($row['surat_jalan_id']);
             $grouped[$sjId][] = $row;
+        }
+
+        return $grouped;
+    }
+
+    /**
+     * Foto checkpoint SUPIR (ekspedisi_t_trip_photo: berangkat/serah_terima/sj)
+     * utk baris SJ yang trip_id-nya terisi -- dipakai modal "Detail Surat Jalan"
+     * FE (2026-08-21) supaya foto lapangan supir ikut kelihatan, bukan cuma
+     * foto_surat_jalan/foto_validasi milik SJ sendiri. Path relatif APA ADANYA
+     * (sama pola dgn foto_surat_jalan/foto_validasi di atas) -- FE yang urus
+     * prefix API_BASE_URL, BUKAN dibangun jadi URL absolut di sini (beda dari
+     * AdminController::driverDetail(), yang memang butuh absolut krn dipakai
+     * halaman lain).
+     * @return array<int, array<int, array{type:string, path:string}>> trip_id => baris foto
+     */
+    private static function batchTripPhotosByTripId(PDO $pdo, array $tripIds): array
+    {
+        if (!$tripIds) {
+            return [];
+        }
+
+        $placeholders = [];
+        $params = [];
+        foreach ($tripIds as $i => $tripId) {
+            $key = "tid{$i}";
+            $placeholders[] = ":{$key}";
+            $params[$key] = $tripId;
+        }
+
+        $stmt = $pdo->prepare(
+            'SELECT trip_id, type, path FROM ekspedisi_t_trip_photo
+             WHERE trip_id IN (' . implode(',', $placeholders) . ')'
+        );
+        $stmt->execute($params);
+
+        $grouped = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $grouped[(int) $row['trip_id']][] = ['type' => $row['type'], 'path' => $row['path']];
         }
 
         return $grouped;
@@ -473,9 +519,18 @@ class SuratJalan
         return $id;
     }
 
+    /**
+     * Format nomor: SJ_YYYYMMDD_XXXX (2026-08-21, sebelumnya "SJ-YYYYMMDD-XXXX"
+     * -- separator diganti "-" jadi "_" atas permintaan user). Tahun SENGAJA
+     * tetap di depan (bukan DDMMYYYY) supaya nomor SJ otomatis terurut
+     * kronologis kalau di-sort sbg teks (YYYYMMDD, bukan DDMMYYYY, yang justru
+     * mengelompokkan per tanggal-dalam-bulan dulu, bukan per waktu asli).
+     * XXXX = `id` auto-increment GLOBAL (bukan reset per hari), zero-padded 4
+     * digit -- sama seperti sebelumnya, angkanya terus naik lintas hari.
+     */
     private static function assignNomor(PDO $pdo, int $id): void
     {
-        $nomor = 'SJ-' . date('Ymd') . '-' . str_pad((string) $id, 4, '0', STR_PAD_LEFT);
+        $nomor = 'SJ_' . date('Ymd') . '_' . str_pad((string) $id, 4, '0', STR_PAD_LEFT);
         $pdo->prepare('UPDATE ekspedisi_t_surat_jalan SET no_surat_jalan = :nomor WHERE id = :id')
             ->execute(['nomor' => $nomor, 'id' => $id]);
     }

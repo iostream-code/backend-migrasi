@@ -439,8 +439,10 @@ lama (lihat keputusan di bagian atas). Dua jalur pengisian:
    setelah SJ-nya dibuat. `status` mulai dari `draft` (belum ada foto) sampai `foto_surat_jalan`
    terisi.
 
-`no_surat_jalan` **auto-generated** setelah insert (format `SJ-YYYYMMDD-xxxx`, `xxxx` = id
-dipadding 4 digit) — `App\Support\SuratJalan::assignNomor()`, dipanggil dari `create()` maupun
+`no_surat_jalan` **auto-generated** setelah insert (format `SJ_YYYYMMDD_xxxx`, sebelum
+2026-08-21 separatornya `-`; `xxxx` = id GLOBAL auto-increment dipadding 4 digit, BUKAN reset
+per hari; tahun tetap di depan -- bukan `DDMMYYYY` -- supaya nomornya otomatis terurut
+kronologis kalau di-sort sbg teks) — `App\Support\SuratJalan::assignNomor()`, dipanggil dari `create()` maupun
 `upsertFromTripPhoto()`. **Sengaja tetap auto-generate**, tidak diketik manual seperti
 `no_surat_jalan`/`SJ_...` di `surat-jalan-apk` — keputusan dipertahankan setelah dibandingkan
 langsung ke alur input SJ asli (lihat catatan di bawah). `PUT /admin/sj/{id}` buat admin
