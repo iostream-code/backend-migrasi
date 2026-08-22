@@ -17,15 +17,37 @@ pindah, lihat `src/Ekspedisi/`).
 ## Modul
 
 - **Ekspedisi** (`src/Ekspedisi/`) — tracking supir (internal & eksternal) + manajemen surat
-  jalan. **Live**, dipakai [`ekspedisi-apk`](../ekspedisi-apk) (Cordova). Route-nya **flat, tanpa
-  prefix** (`/login`, `/admin/sj`, `/driver/me`, dst) -- historis, dari sebelum repo ini
-  multi-modul, TIDAK diubah supaya frontend yang sudah live tidak putus.
+  jalan. **Live**, dipakai [`ekspedisi-apk`](../ekspedisi-apk) (Cordova). Route-nya **diprefix
+  `/ekspedisi`** (`/ekspedisi/login`, `/ekspedisi/admin/sj`, `/ekspedisi/driver/me`, dst).
+  **[BERUBAH 2026-08-22]** — dulu flat tanpa prefix (historis, dari sebelum repo ini
+  multi-modul), diubah setelah `inventory-apk` kepergok memanggil `/login` polos dan malah kena
+  `AuthController` modul ini (waktu itu memang tanpa prefix, jadi Slim mencocokkan ke sini
+  duluan) — login gudang "berhasil" tersambung tapi balikin bentuk response Ekspedisi
+  (`role: driver/admin`, bukan `AdminGudang`/`StaffGudang`), diam-diam gagal redirect di FE.
+  `ekspedisi-apk` (frontend, `src/js/{api,auth,versionCheck}.js`) sudah disesuaikan di sesi yang
+  sama. **Perlu dikoordinasikan sebelum deploy**: build `ekspedisi-apk` yang sudah ter-install
+  di device supir/admin dan masih pakai path lama akan langsung putus begitu backend ini
+  di-deploy, sampai device itu update ke build baru — lihat catatan lengkap di
+  `src/Ekspedisi/routes.php`.
 - **Inventory** (`src/Inventory/`) — migrasi bertahap dari `backend-production`
   (`app/Http/Controllers/API/Inventory/*`, `Route::prefix('inventory')` di `routes/api.php`
-  sana). **Baru skeleton** (`GET /inventory/ping` doang, lihat `src/Inventory/routes.php`) --
-  endpoint bisnis aslinya (Material/Opname/Stock In/Stock Out/Home Dashboard) belum dipindah.
-  Route-nya **diprefix `/inventory`** (beda dari Ekspedisi) supaya dua modul tidak pernah
-  bentrok path.
+  sana). Route-nya **diprefix `/inventory`** (dari awal MEMANG begitu, beda dari Ekspedisi yang
+  baru menyusul) supaya dua modul tidak pernah bentrok path. **Status (2026-08-22):** Auth
+  (`POST /inventory/login`, gate divisi Gudang
+  `divisi_id=8`+`kode='WH'`), Config (`check-version`, `CONFIG_ID=VERSION_INVENTORY_PUSAT`),
+  Material (CRUD + upload foto + doc-numbering), Opname (state machine penuh: sesi/scan/submit/
+  approve/reject), Home Dashboard, Stock In (receive PO), dan Stock Out (issue ke produksi) --
+  semua endpoint yang benar-benar dipanggil `inventory-apk` saat ini (lihat "Selesai" di
+  `inventory-apk/ROADMAP.md` utk daftar persis) sudah diporting & **diverifikasi live** terhadap
+  database produksi, termasuk posting stok WAC asli lewat `Support/StockPosting.php` (sekarang
+  juga dukung `decrement_outstanding_in`/`decrement_outstanding_out`, dipakai StockIn/StockOut).
+  Stock In sengaja TIDAK replikasi integrasi shadow-SJ (Surat Jalan) versi asli -- lihat docblock
+  `Inventory/Controllers/StockInController.php`. Endpoint lain (Done/History/Manual/retur/
+  export, dst) & fitur Home lain (popup Request PO) masih backlog, belum ada UI-nya di FE.
+  **Belum ada cutover** — frontend [`inventory-apk`](../inventory-apk) masih memanggil
+  `backend-production` sepenuhnya. Detail lengkap (query per endpoint, bug yang ditemukan &
+  diperbaiki, hasil verifikasi live) ada di `inventory-apk/ROADMAP.md`, bukan diduplikasi di
+  sini.
 
 Modul baru = folder `src/<NamaModul>/` baru (routes.php + Controllers/) + satu baris mount di
 `src/bootstrap.php`. Infra generik (`Database.php`, `Support/Jwt.php`, `Support/PhotoStorage.php`,
@@ -721,6 +743,9 @@ backend-migrasi/
     │   └── AuthMiddleware.php    # cek Authorization: Bearer <token>, taruh user_id/role di request -- SHARED
     ├── Controllers/
     │   └── Controller.php        # helper json()/error() dipakai semua controller -- SHARED
+    ├── Support/
+    │   └── DocumentNumber.php     # next()/syncToAtLeast() thd cfg_m_doc_number -- SHARED (company-wide,
+    │                               # bukan spesifik 1 modul), dipakai Inventory, bisa dipakai modul lain nanti
     ├── Ekspedisi/                 # MODUL -- lihat "Modul" di atas, path/behavior TIDAK berubah
     │   ├── routes.php               # route table modul ini (dipindah dari bootstrap.php lama)
     │   ├── Support/
@@ -741,9 +766,19 @@ backend-migrasi/
     │       ├── SuratJalanController.php # /admin/sj* (modul surat jalan MILIK modul ini)
     │       ├── EkspedisiController.php # /admin/ekspedisi* (master perusahaan ekspedisi eksternal MILIK modul ini)
     │       └── ConfigController.php   # /config/check-version, CONFIG_ID='VERSION_EKSPEDISI_PUSAT' (MILIK modul ini)
-    └── Inventory/                  # MODUL BARU -- skeleton doang, lihat "Modul" di atas
-        ├── routes.php                # GET /inventory/ping placeholder
-        └── Controllers/               # kosong, .gitkeep
+    └── Inventory/                  # MODUL BARU -- lihat "Modul" di atas utk status per-endpoint
+        ├── routes.php                # /inventory/login, /config/check-version (publik) + grup authed:
+        │                               # /inventory/ping, /material/*, /opname/*
+        ├── Support/
+        │   ├── ApiEnvelope.php        # trait apiSuccess()/apiError()/apiNotFound() -- shape {status,message,data}
+        │   │                           # spt kontrak Laravel lama, BEDA dari Controller::json()/error() milik Ekspedisi
+        │   └── StockPosting.php       # postIn()/postOut() -- WAC avg-cost, ledger wh_log_stock_mutation,
+        │                               # SELALU dijalankan di dalam transaksi PDO yang sama dgn caller
+        └── Controllers/
+            ├── AuthController.php     # POST /inventory/login -- gate divisi Gudang, role dari jabatan
+            ├── ConfigController.php   # CONFIG_ID='VERSION_INVENTORY_PUSAT' (MILIK modul ini)
+            ├── MaterialController.php # master barang: list/search/filter, CRUD, upload foto, doc-numbering
+            └── OpnameController.php   # stock take: sesi/scan/submit/approve/reject, posting via StockPosting
 ```
 
 ## Performa `GET /admin/sj` -- N+1 dibatch (2026-08-20)
