@@ -79,6 +79,8 @@ return function (App $app): void {
             $authed->group('/home-dashboard', function ($h) use ($home) {
                 $h->post('/get-dashboard', [$home, 'getDashboard']);
                 $h->post('/get-material-detail', [$home, 'getMaterialDetail']);
+                $h->post('/create-purchase-request', [$home, 'createPurchaseRequest']);
+                $h->post('/list-purchase-request', [$home, 'listPurchaseRequest']);
             });
 
             $stockIn = new StockInController();

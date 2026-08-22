@@ -36,14 +36,23 @@ pindah, lihat `src/Ekspedisi/`).
   (`POST /inventory/login`, gate divisi Gudang
   `divisi_id=8`+`kode='WH'`), Config (`check-version`, `CONFIG_ID=VERSION_INVENTORY_PUSAT`),
   Material (CRUD + upload foto + doc-numbering), Opname (state machine penuh: sesi/scan/submit/
-  approve/reject), Home Dashboard, Stock In (receive PO), dan Stock Out (issue ke produksi) --
-  semua endpoint yang benar-benar dipanggil `inventory-apk` saat ini (lihat "Selesai" di
-  `inventory-apk/ROADMAP.md` utk daftar persis) sudah diporting & **diverifikasi live** terhadap
-  database produksi, termasuk posting stok WAC asli lewat `Support/StockPosting.php` (sekarang
-  juga dukung `decrement_outstanding_in`/`decrement_outstanding_out`, dipakai StockIn/StockOut).
-  Stock In sengaja TIDAK replikasi integrasi shadow-SJ (Surat Jalan) versi asli -- lihat docblock
+  approve/reject), Home Dashboard (+ create/list Purchase Request, tab PO), Stock In (receive
+  PO), dan Stock Out (issue ke produksi) -- semua endpoint yang benar-benar dipanggil
+  `inventory-apk` saat ini (lihat "Selesai" di `inventory-apk/ROADMAP.md` utk daftar persis)
+  sudah diporting & **diverifikasi live** terhadap database produksi, termasuk posting stok WAC
+  asli lewat `Support/StockPosting.php` (sekarang juga dukung
+  `decrement_outstanding_in`/`decrement_outstanding_out`, dipakai StockIn/StockOut). Stock In
+  sengaja TIDAK replikasi integrasi shadow-SJ (Surat Jalan) versi asli -- lihat docblock
   `Inventory/Controllers/StockInController.php`. Endpoint lain (Done/History/Manual/retur/
-  export, dst) & fitur Home lain (popup Request PO) masih backlog, belum ada UI-nya di FE.
+  export, approve/reject/cancel PR, dst) masih backlog, belum ada UI-nya di FE atau bukan aksi
+  gudang. **⚠️ Bug data SHARED ditemukan (belum diperbaiki di sumbernya)**: baris
+  `cfg_m_doc_number` utk `'PR'` py `reset_period=MONTHLY` tapi `format_pattern` (`PR-{NNNNN}`)
+  tidak menyisipkan tahun/bulan -- reset bulanan bikin nomor collide dgn PR nyata dari bulan
+  sebelumnya (`uniq_pr_number` violation). Diredam di `HomeController::createPurchaseRequest()`
+  (sync ke max aktual dulu, pola sama dgn `MaterialController`), TAPI akar masalahnya ada di
+  tabel `cfg_m_doc_number` sendiri yang dipakai BARENG `backend-production` -- kemungkinan besar
+  backend-production kena bug yang sama tiap pergantian bulan. Perlu keputusan terpisah (ganti
+  `reset_period` jadi `NONE`, atau tambah `{YY}{MM}` ke `format_pattern`), di luar scope porting.
   **Cutover LOCAL sudah jalan** (2026-08-22, susulan) — frontend [`inventory-apk`](../inventory-apk)
   `APP_CONFIG.API_BASE_URL` LOCAL sekarang ke sini, bukan lagi `backend-production` (production
   build masih nunjuk `backend-production`, belum disesuaikan). Detail lengkap (query per

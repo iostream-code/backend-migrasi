@@ -6,22 +6,31 @@ namespace App\Inventory\Controllers;
 
 use App\Database;
 use App\Inventory\Support\ApiEnvelope;
+use App\Support\DocumentNumber;
 use PDO;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 
 /**
  * Port dari backend-production App\Http\Controllers\API\Inventory\HomeController
- * (+ DashboardService + MaterialService::getMaterialDetail, Eloquent) ke
+ * (+ DashboardService + MaterialService::getMaterialDetail +
+ * Purchase\PurchaseRequestService::{create,getListForDashboard}, Eloquent) ke
  * Slim/PDO polos. Field request/response dikutip apa adanya dari sana
  * (stock_status, butuh_po, dst) supaya kompatibel kalau inventory-apk suatu
  * saat di-pointing kesini.
  *
+ * createPurchaseRequest/listPurchaseRequest (2026-08-22, tab PO) SENGAJA
+ * TIDAK kirim notifikasi Firebase (beda dari HomeController asli yang push
+ * ke user id 371 tiap create) -- backend-migrasi belum py integrasi Firebase
+ * sama sekali, di luar scope porting Inventory. Approve/reject/cancel/update
+ * PR (Purchase\PurchaseRequestService method lainnya) JUGA TIDAK diport --
+ * itu aksi departemen Purchasing (approve PR jadi PO), bukan gudang, dan
+ * tidak ada UI-nya di inventory-apk sama sekali.
+ *
  * TIDAK diport di pass ini (lihat inventory-apk/ROADMAP.md): getWarehouses,
- * checkInternetInventory, createPurchaseRequest/listPurchaseRequest/
- * getOutstandingReqByMaterial (popup "Request Order" & tab PO) -- belum ada
- * UI-nya yang benar-benar terhubung di inventory-apk saat ini (tab PO masih
- * placeholder, lihat README app itu bagian "Status fitur").
+ * checkInternetInventory, getOutstandingReqByMaterial (popup breakdown
+ * "butuh_po" di Home) -- belum ada UI-nya yang benar-benar terhubung di
+ * inventory-apk saat ini.
  */
 class HomeController
 {
@@ -196,6 +205,238 @@ class HomeController
                 'days' => $days,
             ],
         ]);
+    }
+
+    /**
+     * POST /inventory/home-dashboard/create-purchase-request
+     * Port dari Purchase\PurchaseRequestService::create() (dipanggil lewat
+     * HomeController::createPurchaseRequest + CreatePurchaseRequestFromDashboardRequest
+     * di backend-production). requested_by/created_by SELALU dari JWT
+     * (user_id shared_m_users), TIDAK PERNAH dari body -- beda dari versi asli
+     * yang resolve `requested_by` dari `user_id` body via model `Users` (tabel
+     * legacy `users`, BUKAN `shared_m_users` yang dipakai auth modul ini).
+     */
+    public function createPurchaseRequest(Request $request, Response $response): Response
+    {
+        $body = (array) $request->getParsedBody();
+        $warehouseId = (int) ($body['warehouse_id'] ?? 0);
+        if ($warehouseId <= 0) {
+            return $this->apiError($response, 'warehouse_id wajib diisi.', 422);
+        }
+
+        $items = $body['items'] ?? null;
+        if (!is_array($items) || empty($items)) {
+            return $this->apiError($response, 'Minimal 1 barang harus dipilih', 422);
+        }
+
+        $priority = in_array($body['priority'] ?? 'NORMAL', ['LOW', 'NORMAL', 'HIGH', 'URGENT'], true)
+            ? $body['priority']
+            : 'NORMAL';
+        $notes = self::nullableString($body['notes'] ?? null);
+        $departmentId = !empty($body['department_id']) ? (int) $body['department_id'] : null;
+        $userId = (int) $request->getAttribute('user_id');
+
+        $pdo = Database::connection();
+
+        $materialIds = array_values(array_unique(array_filter(
+            array_map(fn ($i) => (int) ($i['material_id'] ?? 0), $items),
+            fn ($id) => $id > 0
+        )));
+        $materials = [];
+        if (!empty($materialIds)) {
+            $placeholders = implode(',', array_fill(0, count($materialIds), '?'));
+            $stmt = $pdo->prepare("SELECT id, unit_id, default_unit_cost FROM wh_m_material WHERE id IN ({$placeholders})");
+            $stmt->execute($materialIds);
+            foreach ($stmt->fetchAll() as $m) {
+                $materials[(int) $m['id']] = $m;
+            }
+        }
+
+        $details = [];
+        foreach ($items as $item) {
+            $matId = (int) ($item['material_id'] ?? 0);
+            $material = $materials[$matId] ?? null;
+            if (!$material) {
+                continue;
+            }
+            $qty = (float) ($item['qty_requested'] ?? 0);
+            if ($qty <= 0) {
+                continue;
+            }
+            $unitPrice = isset($item['estimated_unit_price']) && (float) $item['estimated_unit_price'] > 0
+                ? (float) $item['estimated_unit_price']
+                : (float) ($material['default_unit_cost'] ?? 0);
+
+            $details[] = [
+                'material_id' => $matId,
+                'unit_id' => $material['unit_id'],
+                'qty_requested' => $qty,
+                'estimated_unit_price' => $unitPrice,
+                'notes' => self::nullableString($item['notes'] ?? null),
+            ];
+        }
+
+        if (empty($details)) {
+            return $this->apiError($response, 'Tidak ada item valid yang bisa disimpan.', 422);
+        }
+
+        $pdo->beginTransaction();
+        try {
+            // Sync ke max aktual dulu (sama pola dgn MaterialController::
+            // generateUniqueCode()) -- cfg_m_doc_number utk 'PR' punya
+            // reset_period=MONTHLY TAPI format_pattern-nya ('PR-{NNNNN}')
+            // TIDAK menyisipkan tahun/bulan sama sekali. Kombinasi ini bikin
+            // counter yang di-reset ke 1 tiap bulan collide dgn nomor PR
+            // NYATA dari bulan-bulan sebelumnya (ditemukan 2026-08-22 pas
+            // verifikasi live: reset Agustus generate 'PR-00001'/'PR-00002'
+            // yang sudah dipakai PR asli bulan Juli, UNIQUE constraint
+            // pur_t_purchase_request.uniq_pr_number gagal). Sync ini
+            // MEREDAM gejalanya (skip ke nomor aman), TAPI TIDAK memperbaiki
+            // akar masalahnya (skema cfg_m_doc_number utk 'PR' itu sendiri,
+            // tabel SHARED dgn backend-production -- backend-production
+            // kemungkinan besar kena bug yang sama persis kalau bikin PR
+            // lewat bulan yang sama, di luar kendali porting ini).
+            $row = $pdo->query("SELECT MAX(CAST(SUBSTRING(pr_number, 4) AS UNSIGNED)) AS max_num FROM pur_t_purchase_request WHERE pr_number LIKE 'PR-%'")->fetch();
+            $maxNum = (int) ($row['max_num'] ?? 0);
+            if ($maxNum > 0) {
+                DocumentNumber::syncToAtLeast($pdo, 'PR', $maxNum);
+            }
+
+            $prNumber = DocumentNumber::next($pdo, 'PR');
+            $now = date('Y-m-d H:i:s');
+
+            $ins = $pdo->prepare(
+                'INSERT INTO pur_t_purchase_request
+                    (pr_number, pr_date, warehouse_id, department_id, requested_by, priority, status, notes, created_by, created_at)
+                 VALUES (:num, :now1, :wh, :dept, :req, :prio, :status, :notes, :createdBy, :now2)'
+            );
+            $ins->execute([
+                'num' => $prNumber,
+                'now1' => $now,
+                'wh' => $warehouseId,
+                'dept' => $departmentId,
+                'req' => $userId,
+                'prio' => $priority,
+                'status' => 'SUBMITTED',
+                'notes' => $notes,
+                'createdBy' => $userId,
+                'now2' => $now,
+            ]);
+            $prId = (int) $pdo->lastInsertId();
+
+            $detStmt = $pdo->prepare(
+                'INSERT INTO pur_t_purchase_request_detail
+                    (purchase_request_id, material_id, unit_id, qty_requested, qty_ordered, estimated_unit_price, notes)
+                 VALUES (:pr, :mat, :unit, :qty, 0, :price, :notes)'
+            );
+            foreach ($details as $d) {
+                $detStmt->execute([
+                    'pr' => $prId,
+                    'mat' => $d['material_id'],
+                    'unit' => $d['unit_id'],
+                    'qty' => $d['qty_requested'],
+                    'price' => $d['estimated_unit_price'],
+                    'notes' => $d['notes'],
+                ]);
+            }
+
+            $pdo->commit();
+
+            return $this->apiSuccess(
+                $response,
+                ['pr_id' => $prId, 'pr_number' => $prNumber, 'status' => 'SUBMITTED', 'total_items' => count($details)],
+                "Request PO berhasil dibuat: {$prNumber}",
+                201
+            );
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * POST /inventory/home-dashboard/list-purchase-request
+     * Port dari Purchase\PurchaseRequestService::getListForDashboard() --
+     * SEMUA warehouse tercampur (TIDAK difilter per warehouse_id), limit 100
+     * terbaru, sama persis dgn versi asli (dashboard lintas-gudang, bukan
+     * cuma milik gudang yang login).
+     */
+    public function listPurchaseRequest(Request $request, Response $response): Response
+    {
+        $pdo = Database::connection();
+
+        $stmt = $pdo->query(
+            "SELECT pr.id, pr.pr_number, pr.pr_date, pr.status, pr.priority, pr.notes,
+                    w.code AS warehouse_code, w.name AS warehouse_name,
+                    u.username AS requester_name
+             FROM pur_t_purchase_request pr
+             LEFT JOIN wh_m_warehouse w ON w.id = pr.warehouse_id
+             LEFT JOIN shared_m_users u ON u.user_id = pr.requested_by
+             WHERE pr.deleted_at IS NULL
+             ORDER BY pr.pr_date DESC, pr.id DESC
+             LIMIT 100"
+        );
+        $prs = $stmt->fetchAll();
+
+        $itemsByPr = $this->fetchPrItems($pdo, array_column($prs, 'id'));
+
+        $data = array_map(function ($pr) use ($itemsByPr) {
+            $items = $itemsByPr[(int) $pr['id']] ?? [];
+            return [
+                'id' => (int) $pr['id'],
+                'pr_number' => $pr['pr_number'],
+                'pr_date' => $pr['pr_date'] ? date('Y-m-d H:i', strtotime($pr['pr_date'])) : null,
+                'status' => $pr['status'],
+                'priority' => $pr['priority'],
+                'warehouse_code' => $pr['warehouse_code'] ?? '-',
+                'warehouse_name' => $pr['warehouse_name'] ?? '-',
+                'requester_name' => $pr['requester_name'] ?? '-',
+                'notes' => $pr['notes'],
+                'total_items' => count($items),
+                'total_qty_requested' => array_sum(array_column($items, 'qty_requested')),
+                'total_qty_ordered' => array_sum(array_column($items, 'qty_ordered')),
+                'items' => $items,
+            ];
+        }, $prs);
+
+        return $this->apiSuccess($response, $data);
+    }
+
+    /** @return array<int,array> keyed by purchase_request_id */
+    private function fetchPrItems(PDO $pdo, array $prIds): array
+    {
+        $prIds = array_values(array_unique(array_map('intval', $prIds)));
+        if (empty($prIds)) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($prIds), '?'));
+        $stmt = $pdo->prepare(
+            "SELECT prd.id, prd.purchase_request_id, prd.material_id, prd.qty_requested, prd.qty_ordered,
+                    m.code AS material_code, m.name AS material_name, u.code AS unit_code,
+                    COALESCE((SELECT SUM(pod.qty_received) FROM pur_t_purchase_order_detail pod WHERE pod.pr_detail_id = prd.id), 0) AS qty_received
+             FROM pur_t_purchase_request_detail prd
+             LEFT JOIN wh_m_material m ON m.id = prd.material_id
+             LEFT JOIN shared_m_unit u ON u.id = prd.unit_id
+             WHERE prd.purchase_request_id IN ({$placeholders})"
+        );
+        $stmt->execute($prIds);
+
+        $out = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $qtyOrdered = (float) $row['qty_ordered'];
+            $qtyReceived = (float) $row['qty_received'];
+            $out[(int) $row['purchase_request_id']][] = [
+                'material_id' => (int) $row['material_id'],
+                'material_code' => $row['material_code'] ?? '-',
+                'material_name' => $row['material_name'] ?? '-',
+                'unit_code' => $row['unit_code'] ?? '-',
+                'qty_requested' => (float) $row['qty_requested'],
+                'qty_ordered' => $qtyOrdered,
+                'qty_received' => $qtyReceived,
+                'qty_remaining' => max(0, $qtyOrdered - $qtyReceived),
+            ];
+        }
+        return $out;
     }
 
     // ─── Private helpers ────────────────────────────────────────────
@@ -380,5 +621,10 @@ class HomeController
             return 'overstock';
         }
         return 'ok';
+    }
+
+    private static function nullableString($v): ?string
+    {
+        return (is_string($v) && trim($v) !== '') ? trim($v) : null;
     }
 }
