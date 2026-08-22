@@ -60,5 +60,7 @@ $app->add(function (Request $request, $handler): Response {
 // ini tetap pendek & tidak ikut membengkak setiap ada modul baru.
 (require __DIR__ . '/Ekspedisi/routes.php')($app);
 (require __DIR__ . '/Inventory/routes.php')($app);
+(require __DIR__ . '/Partner/routes.php')($app);
+(require __DIR__ . '/Purchasing/routes.php')($app);
 
 return $app;

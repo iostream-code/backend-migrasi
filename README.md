@@ -44,10 +44,30 @@ pindah, lihat `src/Ekspedisi/`).
   Stock In sengaja TIDAK replikasi integrasi shadow-SJ (Surat Jalan) versi asli -- lihat docblock
   `Inventory/Controllers/StockInController.php`. Endpoint lain (Done/History/Manual/retur/
   export, dst) & fitur Home lain (popup Request PO) masih backlog, belum ada UI-nya di FE.
-  **Belum ada cutover** — frontend [`inventory-apk`](../inventory-apk) masih memanggil
-  `backend-production` sepenuhnya. Detail lengkap (query per endpoint, bug yang ditemukan &
-  diperbaiki, hasil verifikasi live) ada di `inventory-apk/ROADMAP.md`, bukan diduplikasi di
-  sini.
+  **Cutover LOCAL sudah jalan** (2026-08-22, susulan) — frontend [`inventory-apk`](../inventory-apk)
+  `APP_CONFIG.API_BASE_URL` LOCAL sekarang ke sini, bukan lagi `backend-production` (production
+  build masih nunjuk `backend-production`, belum disesuaikan). Detail lengkap (query per
+  endpoint, bug yang ditemukan & diperbaiki, hasil verifikasi live) ada di
+  `inventory-apk/ROADMAP.md`, bukan diduplikasi di sini.
+- **Partner** (`src/Partner/`) — port dari `backend-production` `App\Http\Controllers\API\Partner\*`
+  (`PartnerController`/`MaterialController`/`DeliveryController`/`ReturController`), dipakai
+  [`inventory-apk`](../inventory-apk) halaman Partner. Route-nya **diprefix `/partner`** (SAMA
+  dgn backend-production, path tidak berubah -- cuma host-nya pindah). Cuma endpoint yang
+  dipanggil `inventory-apk` yang diporting (list transaksi, material, delivery/terima, retur) --
+  `get-partner-data`/`approve`/`add-payment`/`transaksi/{id}/status`/`delete`/`get-partner-summary`
+  TIDAK, dipakai app lain atau tidak dipanggil sama sekali. **[Beda dari backend-production]**
+  di sana TANPA auth sama sekali; di sini digerbangi JWT (`AuthMiddleware`), keputusan sadar user
+  saat porting (2026-08-22). Response envelope per-controller SENGAJA beda-beda (`{success}` vs
+  `{status}` boolean) -- dikutip apa adanya dari backend-production, bukan salah porting. Detail
+  & hasil verifikasi live ada di `inventory-apk/ROADMAP.md`.
+- **Purchasing** (`src/Purchasing/`) — port dari `backend-production` `App\Http\Controllers\API\PurchasingController`
+  (SEMUA method-nya, cuma 3), dipakai `inventory-apk` halaman Logo (tracking foto stiker/resin
+  barang custom sebelum kirim). Domainnya penjualan/produksi
+  (`t_penjualan_header`/`t_penjualan_detail_performa`/`m_client`), bukan Partner ataupun
+  Inventory -- makanya modul sendiri. Route-nya **diprefix `/purchasing`** (BARU -- di
+  backend-production top-level tanpa prefix sama sekali). Sama seperti Partner: digerbangi JWT
+  di sini walau backend-production-nya tidak. Detail & hasil verifikasi live ada di
+  `inventory-apk/ROADMAP.md`.
 
 Modul baru = folder `src/<NamaModul>/` baru (routes.php + Controllers/) + satu baris mount di
 `src/bootstrap.php`. Infra generik (`Database.php`, `Support/Jwt.php`, `Support/PhotoStorage.php`,
