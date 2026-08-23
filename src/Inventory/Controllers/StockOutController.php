@@ -9,6 +9,7 @@ use App\Inventory\Support\ApiEnvelope;
 use App\Inventory\Support\StockPosting;
 use App\Support\DocumentNumber;
 use App\Support\PhotoStorage;
+use InvalidArgumentException;
 use PDO;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
@@ -262,7 +263,146 @@ class StockOutController
         }
     }
 
+    /**
+     * POST /inventory/stock-out/submit-stockout-manual (2026-08-23)
+     * Port dari ManualStockOutService::submit() -- stock out AD-HOC di luar
+     * request produksi (mis. barang rusak dibuang, sample QC, hilang,
+     * disposal), langsung posting ke `wh_t_stock_adjustment`(type=OUT,
+     * source=MANUAL) + detail, BUKAN ke `prd_t_material_issue` (itu KHUSUS
+     * issue ke produksi, lihat submitStockOut() di atas).
+     *
+     * AdminGudang-only -- role SELALU dari JWT, 403 kalau bukan.
+     *
+     * body: { warehouse_id (wajib), reason? (bebas, label spt HADIAH/
+     * KERUSAKAN/HILANG -- default 'MANUAL_OUT' kalau kosong), notes?, items
+     * (wajib, JSON string [{material_id, qty, item_notes?}]) }. TIDAK ADA
+     * `photo` (lihat docblock class ini).
+     */
+    public function submitStockOutManual(Request $request, Response $response): Response
+    {
+        $role = (string) $request->getAttribute('role');
+        if ($role !== 'AdminGudang') {
+            return $this->apiError($response, 'Hanya AdminGudang yang boleh melakukan Stock Out manual.', 403);
+        }
+
+        $body = (array) $request->getParsedBody();
+        $warehouseId = (int) ($body['warehouse_id'] ?? 0);
+        $userId = (int) ($request->getAttribute('user_id') ?? ($body['user_id'] ?? 0));
+        $reason = self::nullableString($body['reason'] ?? null) ?? 'MANUAL_OUT';
+        $notes = self::nullableString($body['notes'] ?? null);
+
+        if ($warehouseId <= 0) {
+            return $this->apiError($response, 'warehouse_id wajib diisi.', 422);
+        }
+
+        $items = json_decode((string) ($body['items'] ?? '[]'), true);
+        if (!is_array($items) || empty($items)) {
+            return $this->apiError($response, 'Items tidak valid', 422);
+        }
+        $hasQty = false;
+        foreach ($items as $it) {
+            if ((float) ($it['qty'] ?? 0) > 0) {
+                $hasQty = true;
+                break;
+            }
+        }
+        if (!$hasQty) {
+            return $this->apiError($response, 'Minimal 1 item harus memiliki qty > 0', 422);
+        }
+
+        $pdo = Database::connection();
+        $pdo->beginTransaction();
+        try {
+            $adjNumber = $this->nextAdjustmentNumber($pdo);
+            $now = date('Y-m-d H:i:s');
+
+            $ins = $pdo->prepare(
+                'INSERT INTO wh_t_stock_adjustment
+                    (adjustment_number, adjustment_date, warehouse_id, adjustment_type, source_type,
+                     reason, status, notes, created_by, created_at, updated_at)
+                 VALUES (:num, :now1, :wh, \'OUT\', \'MANUAL\', :reason, \'DRAFT\', :notes, :uid, :now2, :now3)'
+            );
+            $ins->execute([
+                'num' => $adjNumber, 'now1' => $now, 'wh' => $warehouseId, 'reason' => $reason,
+                'notes' => $notes, 'uid' => $userId ?: null, 'now2' => $now, 'now3' => $now,
+            ]);
+            $adjId = (int) $pdo->lastInsertId();
+
+            foreach ($items as $item) {
+                $this->processManualOutItem($pdo, $adjId, $adjNumber, $warehouseId, $item, $userId);
+            }
+
+            $now2 = date('Y-m-d H:i:s');
+            $pdo->prepare(
+                'UPDATE wh_t_stock_adjustment SET status = \'POSTED\', posted_at = :now, posted_by = :uid WHERE id = :id'
+            )->execute(['now' => $now2, 'uid' => $userId ?: null, 'id' => $adjId]);
+
+            $pdo->commit();
+
+            return $this->apiSuccess(
+                $response,
+                ['adjustment_id' => $adjId, 'doc_number' => $adjNumber],
+                "Stock Out manual berhasil disimpan: {$adjNumber}",
+                201
+            );
+        } catch (InvalidArgumentException | RuntimeException $e) {
+            $pdo->rollBack();
+            return $this->apiError($response, $e->getMessage(), 422);
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+    }
+
     // ─── Private helpers ────────────────────────────────────────────
+
+    /** unit_cost di-resolve StockPosting::postOut() sendiri dari avg_unit_cost saat ini (WAC). */
+    private function processManualOutItem(PDO $pdo, int $adjId, string $adjNumber, int $warehouseId, array $item, int $userId): void
+    {
+        $materialId = (int) ($item['material_id'] ?? 0);
+        $qty = (float) ($item['qty'] ?? 0);
+        if ($qty <= 0) {
+            return;
+        }
+        $itemNotes = self::nullableString($item['item_notes'] ?? null);
+
+        $matStmt = $pdo->prepare('SELECT unit_id FROM wh_m_material WHERE id = :id');
+        $matStmt->execute(['id' => $materialId]);
+        $unitId = $matStmt->fetchColumn();
+        if ($unitId === false) {
+            throw new RuntimeException("Material #{$materialId} tidak ditemukan");
+        }
+
+        $ins = $pdo->prepare(
+            'INSERT INTO wh_t_stock_adjustment_detail (stock_adjustment_id, material_id, qty, unit_id, unit_cost, notes)
+             VALUES (:adj, :mat, :qty, :unit, 0, :notes)'
+        );
+        $ins->execute(['adj' => $adjId, 'mat' => $materialId, 'qty' => $qty, 'unit' => $unitId, 'notes' => $itemNotes]);
+
+        StockPosting::postOut($pdo, [
+            'warehouse_id' => $warehouseId,
+            'material_id' => $materialId,
+            'qty' => $qty,
+            'transaction_type' => 'ADJUSTMENT_OUT',
+            'reference_type' => 'wh_t_stock_adjustment',
+            'reference_id' => $adjId,
+            'reference_number' => $adjNumber,
+            'remarks' => $itemNotes ?: "Manual Stock Out {$adjNumber}",
+            'created_by' => $userId ?: null,
+        ]);
+    }
+
+    /** Sync counter ke max aktual dulu (pola sama OpnameController::createAdjustmentForOpname()/StockInController). */
+    private function nextAdjustmentNumber(PDO $pdo): string
+    {
+        $row = $pdo->query("SELECT MAX(CAST(SUBSTRING(adjustment_number, 5) AS UNSIGNED)) AS max_num FROM wh_t_stock_adjustment WHERE adjustment_number LIKE 'ADJ-%'")->fetch();
+        $maxNum = (int) ($row['max_num'] ?? 0);
+        if ($maxNum > 0) {
+            DocumentNumber::syncToAtLeast($pdo, 'ADJ', $maxNum);
+        }
+
+        return DocumentNumber::next($pdo, 'ADJ');
+    }
 
     private function processIssueItem(PDO $pdo, int $issueId, string $issueNumber, array $req, array $item, int $warehouseId, int $userId): void
     {

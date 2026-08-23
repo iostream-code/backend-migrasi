@@ -11,11 +11,12 @@ declare(strict_types=1);
 // Auth SUDAH REAL (login + resolusi role gudang) -- lihat
 // App\Inventory\Controllers\AuthController. Material + Opname (2026-08-21)
 // + Home Dashboard/Stock In/Stock Out (2026-08-22, subset yang dipakai FE
-// saja -- lihat catatan di masing-masing Controller) SUDAH diport. Excel
-// import/export, Manual Stock In/Out, retur/replacement BELUM, itu backlog
-// (lihat inventory-apk/ROADMAP.md). /ping tetap dipertahankan sbg
-// placeholder ringan pembuktian login+JWT+AuthMiddleware nyambung, tidak
-// mengganggu apa pun kalau dihapus nanti.
+// saja) + Manual Stock In/Out (2026-08-23, AdminGudang-only -- lihat catatan
+// di masing-masing Controller) SUDAH diport. Excel import/export,
+// retur/replacement BELUM, itu backlog (lihat inventory-apk/ROADMAP.md).
+// /ping tetap dipertahankan sbg placeholder ringan pembuktian
+// login+JWT+AuthMiddleware nyambung, tidak mengganggu apa pun kalau dihapus
+// nanti.
 
 use App\Inventory\Controllers\AuthController;
 use App\Inventory\Controllers\ConfigController;
@@ -89,6 +90,9 @@ return function (App $app): void {
                 $si->post('/get-stockin-po-items', [$stockIn, 'getStockInPoItems']);
                 $si->post('/get-stockin-po-detail', [$stockIn, 'getStockInPoDetail']);
                 $si->post('/submit-stockin-receive', [$stockIn, 'submitStockInReceive']);
+                // Manual Stock In (2026-08-23) -- AdminGudang-only, digerbangi di
+                // dalam controller (role dari JWT), bukan middleware terpisah di sini.
+                $si->post('/submit-stockin-manual', [$stockIn, 'submitStockInManual']);
             });
 
             $stockOut = new StockOutController();
@@ -97,6 +101,8 @@ return function (App $app): void {
                 $so->post('/get-stockout-req-items', [$stockOut, 'getStockOutReqItems']);
                 $so->post('/get-stockout-req-detail', [$stockOut, 'getStockOutReqDetail']);
                 $so->post('/submit-stockout', [$stockOut, 'submitStockOut']);
+                // Manual Stock Out (2026-08-23) -- AdminGudang-only, sama pola dgn stock-in di atas.
+                $so->post('/submit-stockout-manual', [$stockOut, 'submitStockOutManual']);
             });
         })->add(new AuthMiddleware());
     });
