@@ -23,8 +23,22 @@ use RuntimeException;
  * di-pointing kesini.
  *
  * TIDAK diport di pass ini (lihat inventory-apk/ROADMAP.md): getStockInDone,
- * getStockInHistory, Manual Stock In, retur/replacement barang rusak, export
- * Excel/PDF -- belum dipakai FE sekarang.
+ * getStockInHistory, retur/replacement barang rusak, export Excel/PDF --
+ * belum dipakai FE sekarang.
+ *
+ * **Manual Stock In** (2026-08-23, `submitStockInManual()`) -- port dari
+ * `App\Services\Inventory\StockIn\ManualStockInService::submit()` (Eloquent).
+ * Tabel BEDA dari receive PO di atas (`wh_t_stock_adjustment`/`_detail`,
+ * BUKAN `pur_t_receive_warehouse`) -- sama persis tabel yang dipakai
+ * `OpnameController::createAdjustmentForOpname()` utk posting selisih opname,
+ * cuma beda `source_type` (`MANUAL` vs `OPNAME`) & `reason`. AdminGudang-only
+ * (role dari JWT, pola sama Opname approve/reject -- versi Laravel asli TIDAK
+ * py gate role sama sekali di level route/request, `authorize()` selalu
+ * `true`). `getStockInManualMaterials`/`getStockInManualHistory` versi asli
+ * TIDAK diport -- material picker cukup pakai
+ * `POST /inventory/opname/lookup-material` yang sudah ada (bentuk data sama
+ * persis yg dibutuhkan: id/code/name/unit/current_stock), history belum ada
+ * UI-nya di FE (sama pola "belum dipakai FE" spt endpoint lain yg di-skip).
  *
  * [DISEDERHANAKAN dari versi asli, keputusan sadar 2026-08-22] ReceiveService
  * asli auto-alokasi tiap item receive ke SJ (Surat Jalan) digital yang OPEN
@@ -255,7 +269,157 @@ class StockInController
         }
     }
 
+    /**
+     * POST /inventory/stock-in/submit-stockin-manual (2026-08-23)
+     * Port dari ManualStockInService::submit() -- stock in AD-HOC di luar PO
+     * (mis. hadiah supplier, sisa produksi, retur customer, dll), langsung
+     * posting ke `wh_t_stock_adjustment`(type=IN, source=MANUAL) + detail,
+     * BUKAN ke `pur_t_receive_warehouse` (itu KHUSUS receive PO, lihat
+     * submitStockInReceive() di atas).
+     *
+     * AdminGudang-only -- role SELALU dari JWT (bukan body), 403 kalau bukan
+     * (pola sama Opname approve/reject; versi Laravel asli TIDAK py gate ini
+     * sama sekali).
+     *
+     * body: { warehouse_id (wajib), notes?, items (wajib, JSON string
+     * [{material_id, qty, item_notes?}]), photo? (multipart, OPSIONAL --
+     * beda dari receive PO yang WAJIB) }.
+     */
+    public function submitStockInManual(Request $request, Response $response): Response
+    {
+        $role = (string) $request->getAttribute('role');
+        if ($role !== 'AdminGudang') {
+            return $this->apiError($response, 'Hanya AdminGudang yang boleh melakukan Stock In manual.', 403);
+        }
+
+        $body = (array) $request->getParsedBody();
+        $warehouseId = (int) ($body['warehouse_id'] ?? 0);
+        $userId = (int) ($request->getAttribute('user_id') ?? ($body['user_id'] ?? 0));
+        $notes = self::nullableString($body['notes'] ?? null);
+
+        if ($warehouseId <= 0) {
+            return $this->apiError($response, 'warehouse_id wajib diisi.', 422);
+        }
+
+        $items = json_decode((string) ($body['items'] ?? '[]'), true);
+        if (!is_array($items) || empty($items)) {
+            return $this->apiError($response, 'Items tidak valid', 422);
+        }
+        $hasQty = false;
+        foreach ($items as $it) {
+            if ((float) ($it['qty'] ?? 0) > 0) {
+                $hasQty = true;
+                break;
+            }
+        }
+        if (!$hasQty) {
+            return $this->apiError($response, 'Minimal 1 item harus memiliki qty > 0', 422);
+        }
+
+        $pdo = Database::connection();
+        $pdo->beginTransaction();
+        try {
+            $adjNumber = $this->nextAdjustmentNumber($pdo);
+            $now = date('Y-m-d H:i:s');
+
+            $ins = $pdo->prepare(
+                'INSERT INTO wh_t_stock_adjustment
+                    (adjustment_number, adjustment_date, warehouse_id, adjustment_type, source_type,
+                     reason, status, notes, created_by, created_at, updated_at)
+                 VALUES (:num, :now1, :wh, \'IN\', \'MANUAL\', \'MANUAL_IN\', \'DRAFT\', :notes, :uid, :now2, :now3)'
+            );
+            $ins->execute([
+                'num' => $adjNumber, 'now1' => $now, 'wh' => $warehouseId,
+                'notes' => $notes, 'uid' => $userId ?: null, 'now2' => $now, 'now3' => $now,
+            ]);
+            $adjId = (int) $pdo->lastInsertId();
+
+            $photoPath = $this->uploadManualPhoto($request, $adjId);
+            if ($photoPath !== null) {
+                $pdo->prepare('UPDATE wh_t_stock_adjustment SET photo_path = :p WHERE id = :id')
+                    ->execute(['p' => $photoPath, 'id' => $adjId]);
+            }
+
+            foreach ($items as $item) {
+                $this->processManualInItem($pdo, $adjId, $adjNumber, $warehouseId, $item, $userId);
+            }
+
+            $now2 = date('Y-m-d H:i:s');
+            $pdo->prepare(
+                'UPDATE wh_t_stock_adjustment SET status = \'POSTED\', posted_at = :now, posted_by = :uid WHERE id = :id'
+            )->execute(['now' => $now2, 'uid' => $userId ?: null, 'id' => $adjId]);
+
+            $pdo->commit();
+
+            return $this->apiSuccess(
+                $response,
+                ['adjustment_id' => $adjId, 'doc_number' => $adjNumber],
+                "Stock In manual berhasil disimpan: {$adjNumber}",
+                201
+            );
+        } catch (InvalidArgumentException | RuntimeException $e) {
+            $pdo->rollBack();
+            return $this->apiError($response, $e->getMessage(), 422);
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+    }
+
     // ─── Private helpers ────────────────────────────────────────────
+
+    /**
+     * unit_cost SELALU 0 (port apa adanya dari ManualStockInService::
+     * processItem() -- manual in tidak ada harga beli, WAC ikut avg cost
+     * yang sudah ada lewat StockPosting::postIn()).
+     */
+    private function processManualInItem(PDO $pdo, int $adjId, string $adjNumber, int $warehouseId, array $item, int $userId): void
+    {
+        $materialId = (int) ($item['material_id'] ?? 0);
+        $qty = (float) ($item['qty'] ?? 0);
+        if ($qty <= 0) {
+            return;
+        }
+        $itemNotes = self::nullableString($item['item_notes'] ?? null);
+
+        $matStmt = $pdo->prepare('SELECT unit_id FROM wh_m_material WHERE id = :id');
+        $matStmt->execute(['id' => $materialId]);
+        $unitId = $matStmt->fetchColumn();
+        if ($unitId === false) {
+            throw new RuntimeException("Material #{$materialId} tidak ditemukan");
+        }
+
+        $ins = $pdo->prepare(
+            'INSERT INTO wh_t_stock_adjustment_detail (stock_adjustment_id, material_id, qty, unit_id, unit_cost, notes)
+             VALUES (:adj, :mat, :qty, :unit, 0, :notes)'
+        );
+        $ins->execute(['adj' => $adjId, 'mat' => $materialId, 'qty' => $qty, 'unit' => $unitId, 'notes' => $itemNotes]);
+
+        StockPosting::postIn($pdo, [
+            'warehouse_id' => $warehouseId,
+            'material_id' => $materialId,
+            'qty' => $qty,
+            'unit_cost' => 0,
+            'transaction_type' => 'ADJUSTMENT_IN',
+            'reference_type' => 'wh_t_stock_adjustment',
+            'reference_id' => $adjId,
+            'reference_number' => $adjNumber,
+            'remarks' => $itemNotes ?: "Manual Stock In {$adjNumber}",
+            'created_by' => $userId ?: null,
+        ]);
+    }
+
+    /** Sync counter ke max aktual dulu (pola sama MaterialController::generateUniqueCode()/OpnameController). */
+    private function nextAdjustmentNumber(PDO $pdo): string
+    {
+        $row = $pdo->query("SELECT MAX(CAST(SUBSTRING(adjustment_number, 5) AS UNSIGNED)) AS max_num FROM wh_t_stock_adjustment WHERE adjustment_number LIKE 'ADJ-%'")->fetch();
+        $maxNum = (int) ($row['max_num'] ?? 0);
+        if ($maxNum > 0) {
+            DocumentNumber::syncToAtLeast($pdo, 'ADJ', $maxNum);
+        }
+
+        return DocumentNumber::next($pdo, 'ADJ');
+    }
 
     private function processReceiveItem(PDO $pdo, int $receiveId, string $receiveNumber, array $po, array $item, int $warehouseId, int $userId): void
     {
@@ -462,6 +626,21 @@ class StockInController
     {
         $baseDir = __DIR__ . "/../../../public/uploads/stockin/{$receiveId}";
         return PhotoStorage::save($request, 'photo', $baseDir, "uploads/stockin/{$receiveId}", 'bukti');
+    }
+
+    /**
+     * Folder TERPISAH dari uploadPhoto() di atas (`uploads/stockin-manual/`,
+     * bukan `uploads/stockin/`) -- `$adjId` (wh_t_stock_adjustment.id) dan
+     * `$receiveId` (pur_t_receive_warehouse.id) dua auto-increment BEDA tabel
+     * yang independen, keduanya bisa saja kebetulan sama nilainya. Kalau
+     * dipaksa satu folder `uploads/stockin/{id}`, foto manual & foto receive
+     * PO bisa saling TIMPA kalau id-nya kebetulan sama -- dipisah supaya
+     * mustahil bentrok.
+     */
+    private function uploadManualPhoto(Request $request, int $adjId): ?string
+    {
+        $baseDir = __DIR__ . "/../../../public/uploads/stockin-manual/{$adjId}";
+        return PhotoStorage::save($request, 'photo', $baseDir, "uploads/stockin-manual/{$adjId}", 'bukti');
     }
 
     private static function nullableString($v): ?string

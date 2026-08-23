@@ -391,29 +391,6 @@ class AdminController extends Controller
     }
 
     /**
-     * GET /admin/spk-belum-sj
-     * Daftar SPK ready-kirim yang BELUM ADA SJ sama sekali -- dipakai
-     * tab "SPK" (landing page admin) di ekspedisi-apk. Lihat
-     * App\Support\SpkReadyKirim::listBelumSj(). ("Belum diplot ke supir"
-     * sbg kriteria terpisah, dulu dipakai "Plot SPK ke Supir", SUDAH
-     * DIHAPUS 2026-08-20 -- tab Ekspedisi sekarang murni monitoring, lihat
-     * komentar drivers() & SuratJalanController::store().)
-     * query opsional: q (cari nama client/no SPK), page, per_page (default 20, maks 100)
-     */
-    public function spkBelumSj(Request $request, Response $response): Response
-    {
-        $q = $request->getQueryParams();
-        $result = SpkReadyKirim::listBelumSj(
-            Database::connection(),
-            !empty($q['q']) ? (string) $q['q'] : null,
-            !empty($q['page']) ? (int) $q['page'] : 1,
-            !empty($q['per_page']) ? (int) $q['per_page'] : 20
-        );
-
-        return $this->json($response, $result);
-    }
-
-    /**
      * GET /admin/surat-jalan/{no}
      * Cek nomor SJ asli (tabel surat_jalan milik backend-production, READ-ONLY)
      * sebelum ditautkan ke trip -- dipakai frontend buat preview/validasi di

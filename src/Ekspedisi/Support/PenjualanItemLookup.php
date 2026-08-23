@@ -12,6 +12,12 @@ use PDO;
  * TIDAK PERNAH menulis ke t_penjualan_detail_performa atau tabel manapun di
  * luar ekspedisi_* dari sini.
  *
+ * Tiap baris juga bawa `client_id`/`client_nama` (2026-08-23, JOIN
+ * t_penjualan_header + m_client, LEFT JOIN supaya lines()/findLine() tetap
+ * jalan walau relasi klien-nya putus) -- dipakai SuratJalanController::store()
+ * buat aturan baru "1 SJ boleh berisi banyak SPK, TAPI cuma kalau semua dari
+ * klien/perusahaan yang sama" (bandingkan client_id semua item yang disentuh).
+ *
  * "Sisa" dihitung dari DUA sumber sekaligus -- surat_jalan (tabel lama milik
  * backend-production, dipakai surat-jalan-apk dkk) DAN ekspedisi_t_surat_jalan_item
  * (tabel baru milik app ini) -- supaya tidak dobel kirim kalau 1 SPK yang
@@ -28,9 +34,12 @@ use PDO;
 class PenjualanItemLookup
 {
     private const BASE_SELECT = "SELECT pdp.penjualan_detail_performa_id, pdp.penjualan_id, pdp.penjualan_jenis, pdp.penjualan_qty,
+                    c.client_id, c.client_nama,
                     COALESCE(legacy.total, 0) AS terkirim_legacy,
                     COALESCE(eks.total, 0) AS terkirim_ekspedisi
              FROM t_penjualan_detail_performa pdp
+             LEFT JOIN t_penjualan_header tph ON tph.penjualan_id = pdp.penjualan_id
+             LEFT JOIN m_client c ON c.client_id = tph.client_id
              LEFT JOIN (
                  SELECT penjualan_detail_performa_id, SUM(jumlah_kirim) AS total
                  FROM surat_jalan GROUP BY penjualan_detail_performa_id
@@ -79,6 +88,8 @@ class PenjualanItemLookup
             'penjualan_id' => $row['penjualan_id'],
             'penjualan_jenis' => $row['penjualan_jenis'],
             'penjualan_qty' => (int) $row['penjualan_qty'],
+            'client_id' => $row['client_id'] !== null ? (int) $row['client_id'] : null,
+            'client_nama' => $row['client_nama'],
             'terkirim' => $terkirim,
             'sisa' => max(0, (int) $row['penjualan_qty'] - $terkirim),
         ];

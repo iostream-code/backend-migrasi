@@ -29,6 +29,26 @@ pindah, lihat `src/Ekspedisi/`).
   di device supir/admin dan masih pakai path lama akan langsung putus begitu backend ini
   di-deploy, sampai device itu update ke build baru — lihat catatan lengkap di
   `src/Ekspedisi/routes.php`.
+  **[DISEDERHANAKAN 2026-08-23]** Modul surat jalan (`ekspedisi_t_surat_jalan`,
+  `App\Ekspedisi\Support\SuratJalan`/`SuratJalanController`) dapat 4 perubahan sekaligus,
+  detail lengkap & alasan penuh ada di README `ekspedisi-apk` bagian "Penyederhanaan
+  2026-08-23: 2 tab, nomor SJ manual" (bukan diduplikasi di sini):
+  1. Tab "SPK" (FE) & endpoint `GET /admin/spk-belum-sj`/`AdminController::spkBelumSj()`
+     DIHAPUS — `App\Ekspedisi\Support\SpkReadyKirim::listBelumSj()` ikut dihapus, `find()`
+     dipertahankan (masih dipakai `createTrip()`).
+  2. Nomor SJ (`no_surat_jalan`) **diinput manual admin**, bukan lagi auto-generate — kolom baru
+     `nomor_urut` (int unsigned, unique) jadi sumber kebenaran, `no_surat_jalan` diturunkan darinya
+     (`create()`/`update()`). Baris dari checkpoint foto supir (`upsertFromTripPhoto()`) TIDAK LAGI
+     auto-assign nomor (method `assignNomor()` lama sudah dihapus). Skema kolom ini awalnya file
+     migrasi terpisah (`04_nomor_sj_manual.sql`), **sudah digabung ke `database/ekspedisi/
+     01_schema.sql`** sejak "Konsolidasi Keempat" (2026-08-23, lihat catatan di kepala file itu) --
+     fresh install baru cukup 1 file skema, tidak perlu jalankan file migrasi terpisah lagi.
+  3. `SuratJalan::list()` dipecah jadi `listSearch()` (mode `q` diisi, SQL biasa) &
+     `listWithGaps()` (mode default — sisip baris VIRTUAL `missing: true` utk nomor yang hilang
+     dalam tahun difilter, lintas semua status).
+  4. Aturan baru "1 SJ boleh lintas SPK, TAPI cuma kalau semua dari klien yang sama" —
+     `PenjualanItemLookup` sekarang bawa `client_id`/`client_nama` per lini (JOIN
+     `t_penjualan_header`+`m_client`), divalidasi di `SuratJalanController::store()`.
 - **Inventory** (`src/Inventory/`) — migrasi bertahap dari `backend-production`
   (`app/Http/Controllers/API/Inventory/*`, `Route::prefix('inventory')` di `routes/api.php`
   sana). Route-nya **diprefix `/inventory`** (dari awal MEMANG begitu, beda dari Ekspedisi yang
@@ -127,16 +147,20 @@ pernah dijalankan), bukan skema.
 
 ## Arsitektur singkat
 
-- **Tanpa migration**: [`database/`](database) berisi `CREATE TABLE`/`ALTER`/`RENAME`/seed
-  mentah, satu file per langkah, **bernomor urut sesuai urutan eksekusi** (`01_schema.sql`,
-  `02_seed_admin_access.sql`, dst — lihat isi folder untuk daftar lengkap & urutannya).
-  Ditulis mengikuti gaya persis tabel-tabel baru di `db_dump.sql` (`ENGINE=InnoDB`,
-  `utf8mb4`/`utf8mb4_unicode_ci`, PK `id bigint unsigned AUTO_INCREMENT`, FK eksplisit —
-  termasuk FK ke `shared_m_users` karena sekarang satu database yang sama). Jalankan manual,
-  urut nomornya, satu-satu: `mysql -u <user> -p <database> < database/01_schema.sql`, dst.
-  Tidak ada `php artisan migrate`/runner apa pun — kalau nanti ada perubahan skema baru, tambah
-  file baru dengan nomor berikutnya (mis. `04_...sql`), jangan edit file yang sudah pernah
-  dijalankan.
+- **Tanpa migration**: [`database/`](database) berisi satu subfolder per modul (mis.
+  [`database/ekspedisi/`](database/ekspedisi) — Inventory dkk belum py subfolder sendiri, lihat
+  bagian "Modul" di atas), isinya `CREATE TABLE`/`ALTER`/`RENAME`/seed mentah, satu file per
+  langkah, **bernomor urut sesuai urutan eksekusi** (`01_schema.sql`, `02_seed_admin_access.sql`,
+  dst — lihat isi folder modulnya untuk daftar lengkap & urutannya). Ditulis mengikuti gaya persis
+  tabel-tabel baru di `db_dump.sql` (`ENGINE=InnoDB`, `utf8mb4`/`utf8mb4_unicode_ci`, PK `id
+  bigint unsigned AUTO_INCREMENT`, FK eksplisit — termasuk FK ke `shared_m_users` karena sekarang
+  satu database yang sama). Jalankan manual, urut nomornya, satu-satu: `mysql -u <user> -p
+  <database> < database/ekspedisi/01_schema.sql`, dst. Tidak ada `php artisan migrate`/runner apa
+  pun — kalau nanti ada perubahan skema baru, tambah file baru dengan nomor berikutnya (mis.
+  `04_...sql`), jangan edit file yang sudah pernah dijalankan **KECUALI** dikonsolidasikan balik
+  ke `01_schema.sql` setelah dikonfirmasi jalan di produksi (pola "Konsolidasi Ke-N", lihat
+  catatan di kepala tiap `01_schema.sql` modul, dan `SHOW CREATE TABLE` utk verifikasi sebelum
+  konsolidasi — jangan asal gabung tanpa cek).
 - **Tanpa ORM**: semua query pakai PDO + prepared statement langsung di tiap Controller
   (`src/Controllers/`). `src/Database.php` cuma wrapper koneksi PDO tipis (singleton).
 - **Auth JWT stateless** (`firebase/php-jwt`): `POST /login` cek `username`+`password` ke
@@ -187,13 +211,13 @@ JWT_SECRET=<string acak panjang, mis. `openssl rand -base64 48`>
 ```
 
 ```bash
-mysql -u <username> -p <database> < database/01_schema.sql             # bikin 9 tabel ekspedisi_* baru (TIDAK menyentuh tabel lain)
-mysql -u <username> -p <database> < database/02_seed_admin_access.sql  # edit daftar username dulu, lihat di bawah
-mysql -u <username> -p <database> < database/03_seed_dummy_drivers.sql # opsional
+mysql -u <username> -p <database> < database/ekspedisi/01_schema.sql             # bikin 9 tabel ekspedisi_* baru (TIDAK menyentuh tabel lain)
+mysql -u <username> -p <database> < database/ekspedisi/02_seed_admin_access.sql  # edit daftar username dulu, lihat di bawah
+mysql -u <username> -p <database> < database/ekspedisi/03_seed_dummy_drivers.sql # opsional
 php -S 127.0.0.1:8000 -t public
 ```
 
-Edit dulu daftar `username` di [`database/02_seed_admin_access.sql`](database/02_seed_admin_access.sql)
+Edit dulu daftar `username` di [`database/ekspedisi/02_seed_admin_access.sql`](database/ekspedisi/02_seed_admin_access.sql)
 sebelum menjalankannya — cari berdasarkan `username` (bukan `user_id` mentah) supaya tidak
 perlu lihat-lihat ID manual, dan aman dijalankan berkali-kali (idempotent) kalau nanti mau
 nambah admin lagi. Query terakhir di skrip itu langsung menampilkan siapa saja yang berhasil

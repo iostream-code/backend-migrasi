@@ -7,9 +7,11 @@ aplikasi Cordova legacy di workspace ini -- **bukan** CI/CD lewat git push.
 
 Database MySQL yang dipakai app ini **SAMA PERSIS** dengan `backend-production`
 (`indokoper.com` / db `tasindo`, lihat `.env` lokal) -- kalau skema
-`ekspedisi_*` (`database/01_schema.sql`) sudah pernah dijalankan ke DB itu
-sebelumnya (cek riwayat kerja / README), **langkah database di bawah bisa
-dilewati**, tinggal deploy kodenya saja.
+`ekspedisi_*` (`database/ekspedisi/01_schema.sql`) sudah pernah dijalankan ke
+DB itu sebelumnya (cek riwayat kerja / README), **langkah database di bawah
+bisa dilewati**, tinggal deploy kodenya saja. (Sudah kejadian utk DB produksi
+saat ini -- termasuk kolom `nomor_urut` hasil "Konsolidasi Keempat"
+2026-08-23, lihat catatan di kepala `01_schema.sql` -- skip langkah 7.)
 
 ## 1. Yang perlu disiapkan di hosting
 
@@ -156,8 +158,8 @@ Kalau 9 tabel (`ekspedisi_m_ekspedisi`, `ekspedisi_m_supir`,
 langkah ini. Kalau belum ada sama sekali (DB baru/fresh), jalankan urut:
 
 ```bash
-mysql -h <host> -u <user> -p <database> < database/01_schema.sql
-mysql -h <host> -u <user> -p <database> < database/02_seed_admin_access.sql
+mysql -h <host> -u <user> -p <database> < database/ekspedisi/01_schema.sql
+mysql -h <host> -u <user> -p <database> < database/ekspedisi/02_seed_admin_access.sql
 # 03_seed_dummy_drivers.sql cuma data dummy utk testing -- JANGAN dijalankan
 # ke production kalau tidak mau ada supir palsu di data sungguhan.
 ```

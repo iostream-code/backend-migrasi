@@ -94,7 +94,9 @@ return function (App $app): void {
                 $adminGroup->post('/admin/drivers/{driver}/trip', [$admin, 'createTrip']);
                 $adminGroup->post('/admin/trips/{trip}/complete', [$admin, 'completeTripManual']);
                 $adminGroup->get('/admin/surat-jalan/{no}', [$admin, 'lookupSuratJalan']);
-                $adminGroup->get('/admin/spk-belum-sj', [$admin, 'spkBelumSj']);
+                // GET /admin/spk-belum-sj DIHAPUS (2026-08-23, bareng tab "SPK" di FE) --
+                // app disederhanakan jadi 2 halaman admin (SJ/Ekspedisi), lihat AdminController.php
+                // & SpkReadyKirim.php (listBelumSj() ikut dihapus, find() masih dipakai createTrip()).
                 $adminGroup->post('/admin/trips/{trip}/pengajuan-biaya', [$admin, 'createPengajuanBiaya']);
                 $adminGroup->get('/admin/trips/{trip}/pengajuan-biaya', [$admin, 'listPengajuanBiaya']);
 

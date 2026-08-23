@@ -1,5 +1,14 @@
 -- ekspedisi-apk-backend -- skema tabel domain ekspedisi (langkah 1 dari database/).
 --
+-- KONSOLIDASI KEEMPAT (2026-08-23): file 04_nomor_sj_manual.sql (kolom
+-- `nomor_urut` + unique index di `ekspedisi_t_surat_jalan`, utk nomor SJ
+-- manual -- lihat README.md bagian "Penyederhanaan 2026-08-23") digabung ke
+-- sini -- SUDAH dijalankan di produksi (diverifikasi via SHOW COLUMNS
+-- sebelum konsolidasi ini). File `04_nomor_sj_manual.sql` sendiri sudah
+-- DIHAPUS dari `database/ekspedisi/`, disederhanakan supaya cukup 1 file
+-- (`01_schema.sql`) yang perlu diupload/dijalankan utk fresh install baru
+-- (mis. deploy ke shared hosting) -- tidak perlu jalankan file terpisah lagi
+-- utk perubahan ini.
 -- KONSOLIDASI KETIGA (2026-08-20): file 04-06 (dokumen KTP/SIM/STNK supir,
 -- master perusahaan ekspedisi lokal + FK id_expedisi) digabung ke sini --
 -- SEMUA langkah itu sudah dijalankan di produksi (lihat README.md bagian
@@ -202,7 +211,8 @@ CREATE TABLE `ekspedisi_t_pengajuan_biaya` (
 -- `surat_jalan` asalnya sudah mewakilinya).
 CREATE TABLE `ekspedisi_t_surat_jalan` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
-  `no_surat_jalan` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Auto-generated setelah insert (format SJ_YYYYMMDD_xxxx, sebelum 2026-08-21 separatornya "-"), lihat App\\Support\\SuratJalan::assignNomor() -- kecuali baris migrasi_legacy, no aslinya dipertahankan',
+  `no_surat_jalan` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Diturunkan dari nomor_urut (SJ_<nomor_urut>) oleh App\\Ekspedisi\\Support\\SuratJalan::create()/update() -- kecuali baris migrasi_legacy, no aslinya dipertahankan',
+  `nomor_urut` int unsigned DEFAULT NULL COMMENT 'Nomor urut kertas SJ fisik, diinput manual admin -- sumber kebenaran no_surat_jalan (2026-08-23, konsolidasi dari 04_nomor_sj_manual.sql -- kolom baru, tidak ada di baris lama sampai admin melengkapinya)',
   `trip_id` bigint unsigned DEFAULT NULL COMMENT 'FK ke ekspedisi_t_trip.id -- NULL kalau SJ dibuat manual admin tanpa trip',
   `penjualan_id` varchar(250) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Tautan logis opsional ke t_penjualan_header.penjualan_id (backend-production) -- cuma keisi dari jalur trip-linked, lihat catatan di atas',
   `driver_id` bigint unsigned DEFAULT NULL COMMENT 'FK ke ekspedisi_m_supir.id -- NULL utk baris migrasi_legacy (tidak match andal ke supir manapun)',
@@ -224,6 +234,7 @@ CREATE TABLE `ekspedisi_t_surat_jalan` (
   `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `ekspedisi_t_surat_jalan_no_surat_jalan_unique` (`no_surat_jalan`),
+  UNIQUE KEY `ekspedisi_t_surat_jalan_nomor_urut_unique` (`nomor_urut`),
   -- Satu trip cuma boleh py 1 SJ (upsert by trip_id di jalur checkpoint foto) --
   -- NULL (SJ manual tanpa trip) boleh berulang, MySQL unique key izinkan banyak NULL.
   UNIQUE KEY `ekspedisi_t_surat_jalan_trip_id_unique` (`trip_id`),

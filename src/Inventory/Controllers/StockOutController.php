@@ -22,8 +22,25 @@ use RuntimeException;
  * inventory-apk suatu saat di-pointing kesini.
  *
  * TIDAK diport di pass ini (lihat inventory-apk/ROADMAP.md): getStockOutDone,
- * getStockOutHistory, Manual Stock Out, flow retur produksi 3-tahap
+ * getStockOutHistory, flow retur produksi 3-tahap
  * (inbox/approve/receive/reject/detail/history) -- belum dipakai FE sekarang.
+ *
+ * **Manual Stock Out** (2026-08-23, `submitStockOutManual()`) -- port dari
+ * `App\Services\Inventory\StockOut\ManualStockOutService::submit()`
+ * (Eloquent). Sama tabel dgn Manual Stock In (`wh_t_stock_adjustment`/
+ * `_detail`, type=OUT, source=MANUAL) & Opname (`OpnameController::
+ * createAdjustmentForOpname()`), cuma beda `reason`. AdminGudang-only (role
+ * dari JWT, pola sama Opname approve/reject & Manual Stock In -- versi asli
+ * TIDAK py gate ini sama sekali). **TIDAK ADA foto** -- asimetri SENGAJA dari
+ * versi asli (`ManualStockOutService::submit()` sama sekali tidak menangani
+ * upload foto, beda dari `ManualStockInService` yang opsional -- dikutip apa
+ * adanya, bukan lupa porting). Validasi stok cukup diserahkan ke
+ * `StockPosting::postOut()` (sudah lempar exception kalau kurang) -- versi
+ * Laravel asli py double-check manual `assertOnHandEnough()` SEBELUM
+ * postOut(), sengaja TIDAK direplikasi krn redundan (postOut() dgn lock FOR
+ * UPDATE sudah cukup & lebih aman thd race condition drpd cek terpisah).
+ * `getStockOutManualMaterials`/`getStockOutManualHistory` versi asli TIDAK
+ * diport, sama alasan dgn Manual Stock In (lihat StockInController.php).
  *
  * requester_name/department_name SENGAJA tidak di-join (beda dari
  * MaterialIssueService asli yang selalu sertakan) -- frontend inventory-apk

@@ -67,6 +67,13 @@ class SuratJalanController extends Controller
      * angkanya ("1811"/"1811-2") ATAU format tampilan ("SPK-1811-2") --
      * lihat resolvePenjualanId() (2026-08-20, sebelumnya WAJIB persis "INV_..."
      * apa adanya, tidak praktis diketik admin dari HP tiap kali).
+     *
+     * Response (2026-08-23, dulu array polos): `{ client_id, client_nama,
+     * lines: [...] }` -- client_id/client_nama diambil dari lini pertama
+     * (semua lini 1 SPK pasti 1 klien yang sama). FE pakai ini buat aturan
+     * baru "1 SJ boleh berisi banyak SPK, TAPI cuma kalau semua dari
+     * klien/perusahaan yang sama" -- dicek lagi di server saat submit
+     * (lihat store()), ini cuma feedback cepat sebelum submit.
      */
     public function spkItems(Request $request, Response $response, array $args): Response
     {
@@ -77,7 +84,13 @@ class SuratJalanController extends Controller
             return $this->error($response, 'SPK/penjualan_id tidak ditemukan, cek lagi penulisannya.', 404);
         }
 
-        return $this->json($response, PenjualanItemLookup::lines($pdo, $penjualanId));
+        $lines = PenjualanItemLookup::lines($pdo, $penjualanId);
+
+        return $this->json($response, [
+            'client_id' => $lines[0]['client_id'] ?? null,
+            'client_nama' => $lines[0]['client_nama'] ?? null,
+            'lines' => $lines,
+        ]);
     }
 
     /**
@@ -152,11 +165,30 @@ class SuratJalanController extends Controller
      * EKSTERNAL sengaja TIDAK dibikinkan trip (tidak bisa login/checkpoint
      * apa pun), status "sedang mengirim"-nya cukup dibaca dari status SJ ini
      * langsung.
+     *
+     * `nomor_urut` (2026-08-23, WAJIB) -- nomor kertas SJ fisik yang sudah
+     * dicetak, diinput manual admin (bukan lagi auto-generate dari id/tanggal).
+     * Divalidasi int positif + keunikan SEBELUM insert (lihat blok di bawah).
+     *
+     * **Aturan baru: 1 SJ boleh berisi banyak SPK, TAPI cuma kalau semua dari
+     * klien/perusahaan yang sama** (2026-08-23) -- tiap item yang disentuh
+     * sudah bawa `client_id` dari PenjualanItemLookup::findLine() (lihat loop
+     * validasi item di bawah), dikumpulkan lalu dicek harus 1 nilai unik.
      */
     public function store(Request $request, Response $response): Response
     {
         $pdo = Database::connection();
         $body = (array) $request->getParsedBody();
+
+        $nomorUrut = isset($body['nomor_urut']) && $body['nomor_urut'] !== '' ? (int) $body['nomor_urut'] : null;
+        if ($nomorUrut === null || $nomorUrut <= 0) {
+            return $this->error($response, 'Nomor SJ wajib diisi (angka sesuai nomor kertas SJ fisik).');
+        }
+        $dup = $pdo->prepare('SELECT 1 FROM ekspedisi_t_surat_jalan WHERE nomor_urut = :n LIMIT 1');
+        $dup->execute(['n' => $nomorUrut]);
+        if ($dup->fetchColumn()) {
+            return $this->error($response, "Nomor SJ {$nomorUrut} sudah dipakai, cek lagi.");
+        }
 
         $tripId = !empty($body['trip_id']) ? (int) $body['trip_id'] : null;
         if ($tripId !== null) {
@@ -185,6 +217,7 @@ class SuratJalanController extends Controller
 
         $items = [];
         $touchedSpkIds = [];
+        $touchedClientIds = []; // client_id => client_nama, dicek harus 1 nilai unik (lihat blok setelah loop)
         $jumlahKirim = !empty($body['jumlah_kirim']) ? (int) $body['jumlah_kirim'] : null;
 
         if (!empty($body['items']) && is_array($body['items'])) {
@@ -203,10 +236,21 @@ class SuratJalanController extends Controller
                 }
                 $items[] = ['penjualan_detail_performa_id' => $lineId, 'jumlah_kirim' => $qty];
                 $touchedSpkIds[$line['penjualan_id']] = true;
+                if ($line['client_id'] !== null) {
+                    $touchedClientIds[$line['client_id']] = $line['client_nama'];
+                }
             }
 
             if (empty($items)) {
                 return $this->error($response, 'Isi jumlah kirim minimal untuk 1 item produk.');
+            }
+            // 1 SJ boleh lintas SPK, TAPI cuma kalau semua dari klien/perusahaan
+            // yang sama (2026-08-23) -- client_id null (relasi klien putus)
+            // sengaja tidak ikut dihitung di sini (permisif, bukan diblok),
+            // lihat komentar client_id di PenjualanItemLookup.
+            if (count($touchedClientIds) > 1) {
+                $namaKlien = implode(', ', array_values($touchedClientIds));
+                return $this->error($response, "SPK yang dipilih dari klien/perusahaan berbeda ({$namaKlien}) -- 1 SJ hanya boleh mengangkut SPK dari klien yang sama.");
             }
             $jumlahKirim = array_sum(array_column($items, 'jumlah_kirim'));
         }
@@ -231,6 +275,7 @@ class SuratJalanController extends Controller
         }
 
         $id = SuratJalan::create($pdo, [
+            'nomor_urut' => $nomorUrut,
             'trip_id' => $tripId,
             'driver_id' => $driverId,
             'tujuan' => $body['tujuan'] ?? null,
@@ -308,7 +353,12 @@ class SuratJalanController extends Controller
      * PUT /admin/sj/{id}
      * Lengkapi/koreksi field SJ (mis. yang auto-dibuat dari checkpoint foto
      * supir, biasanya minim data -- admin isi kendaraan/plat/jumlah_kirim belakangan).
-     * body: { tujuan?, kendaraan?, plat?, penerima?, jumlah_kirim?, tgl_kirim?, catatan? }
+     * body: { tujuan?, kendaraan?, plat?, penerima?, jumlah_kirim?, tgl_kirim?, catatan?, nomor_urut? }
+     *
+     * `nomor_urut` (2026-08-23, opsional) -- dipakai buat MELENGKAPI nomor SJ
+     * baris yang lahir dari checkpoint foto supir (upsertFromTripPhoto(), tidak
+     * lagi auto-assign nomor). Divalidasi int positif + unik (exclude baris
+     * ini sendiri) sebelum disimpan, sama seperti store().
      */
     public function update(Request $request, Response $response, array $args): Response
     {
@@ -320,6 +370,20 @@ class SuratJalanController extends Controller
         }
 
         $body = (array) $request->getParsedBody();
+
+        if (array_key_exists('nomor_urut', $body) && $body['nomor_urut'] !== null && $body['nomor_urut'] !== '') {
+            $nomorUrut = (int) $body['nomor_urut'];
+            if ($nomorUrut <= 0) {
+                return $this->error($response, 'Nomor SJ harus angka positif.');
+            }
+            $dup = $pdo->prepare('SELECT 1 FROM ekspedisi_t_surat_jalan WHERE nomor_urut = :n AND id != :id LIMIT 1');
+            $dup->execute(['n' => $nomorUrut, 'id' => $id]);
+            if ($dup->fetchColumn()) {
+                return $this->error($response, "Nomor SJ {$nomorUrut} sudah dipakai, cek lagi.");
+            }
+            $body['nomor_urut'] = $nomorUrut;
+        }
+
         SuratJalan::update($pdo, $id, $body);
 
         return $this->json($response, SuratJalan::find($pdo, $id));
