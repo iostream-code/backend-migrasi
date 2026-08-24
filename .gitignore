@@ -2,6 +2,49 @@
 .env
 .env.backup
 .DS_Store
-/public/uploads/trips
-!/public/uploads/trips/.gitkeep
 *.zip
+
+# Folder upload foto -- data RUNTIME (dibuat PhotoStorage::save() saat upload
+# pertama tiap konteks, lihat src/Support/PhotoStorage.php), BUKAN source
+# code, jadi TIDAK ikut di-commit -- deploy manapun (git pull/zip re-extract)
+# tidak akan pernah menimpa/menghapus foto yang sudah diupload sebelumnya di
+# server, krn git tidak pernah "memiliki" file-file ini sama sekali.
+# Sengaja per-folder (bukan 1 rule generik /public/uploads/*) + .gitkeep per
+# folder -- supaya struktur foldernya kelihatan jelas dari repo (tiap
+# modul/fitur mana saja yang upload foto), bukan cuma implisit dari kode.
+#
+# PENTING: pola ignore-nya `folder/*` (isi folder), BUKAN `folder` (folder
+# itu sendiri) -- git TIDAK BISA un-ignore file di dalam folder yang
+# ignore-nya menyasar foldernya sendiri ("It is not possible to re-include a
+# file if a parent directory of that file is excluded"). Pola lama
+# (`/public/uploads/trips` + `!/public/uploads/trips/.gitkeep`, sebelum
+# 2026-08-24) KELIHATANNYA benar tapi sebenarnya TIDAK PERNAH berhasil
+# nge-track .gitkeep-nya (dicek: `git ls-files | grep uploads` kosong dari
+# awal) -- baru ketahuan pas dites ulang skrg. Verifikasi ulang kalau nambah
+# folder baru: `git check-ignore path/ke/.gitkeep` HARUS kosong (artinya
+# ke-track), bukan malah nyebut nama file itu.
+#
+# Modul baru yang upload foto ke folder baru: tambah pasangan baris yang
+# sama (pola `folder/*` + `!folder/.gitkeep`) di sini juga.
+/public/uploads/trips/*
+!/public/uploads/trips/.gitkeep
+/public/uploads/drivers/*
+!/public/uploads/drivers/.gitkeep
+/public/uploads/sj/*
+!/public/uploads/sj/.gitkeep
+/public/uploads/materials/*
+!/public/uploads/materials/.gitkeep
+/public/uploads/stockin/*
+!/public/uploads/stockin/.gitkeep
+/public/uploads/stockin-manual/*
+!/public/uploads/stockin-manual/.gitkeep
+/public/uploads/stockout/*
+!/public/uploads/stockout/.gitkeep
+/public/uploads/partner/material/*
+!/public/uploads/partner/material/.gitkeep
+/public/uploads/partner/penerimaan/*
+!/public/uploads/partner/penerimaan/.gitkeep
+/public/uploads/retur/*
+!/public/uploads/retur/.gitkeep
+/public/uploads/terima_retur/*
+!/public/uploads/terima_retur/.gitkeep

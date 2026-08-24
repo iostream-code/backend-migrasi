@@ -402,7 +402,9 @@ class SuratJalanController extends Controller
      */
     private function savePhoto(Request $request, int $id, string $kind): ?string
     {
-        $dir = dirname(__DIR__, 2) . "/public/uploads/sj/{$id}";
+        // dirname(__DIR__, 3), BUKAN 2 -- bug path lama (2026-08-21, sudah
+        // diperbaiki 2026-08-24), lihat komentar lengkap di DriverController.php.
+        $dir = dirname(__DIR__, 3) . "/public/uploads/sj/{$id}";
 
         return PhotoStorage::save($request, 'photo', $dir, "uploads/sj/{$id}", $kind);
     }

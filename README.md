@@ -56,14 +56,18 @@ pindah, lihat `src/Ekspedisi/`).
   (`POST /inventory/login`, gate divisi Gudang
   `divisi_id=8`+`kode='WH'`), Config (`check-version`, `CONFIG_ID=VERSION_INVENTORY_PUSAT`),
   Material (CRUD + upload foto + doc-numbering), Opname (state machine penuh: sesi/scan/submit/
-  approve/reject), Home Dashboard (+ create/list Purchase Request, tab PO), Stock In (receive
-  PO), dan Stock Out (issue ke produksi) -- semua endpoint yang benar-benar dipanggil
-  `inventory-apk` saat ini (lihat "Selesai" di `inventory-apk/ROADMAP.md` utk daftar persis)
-  sudah diporting & **diverifikasi live** terhadap database produksi, termasuk posting stok WAC
-  asli lewat `Support/StockPosting.php` (sekarang juga dukung
+  approve/reject), Home Dashboard (+ create/list Purchase Request, tab PO), Stock In (receive PO
+  + **Stock In Manual**, 2026-08-23), dan Stock Out (issue ke produksi + **Stock Out Manual**,
+  2026-08-23) -- semua endpoint yang benar-benar dipanggil `inventory-apk` saat ini (lihat
+  "Selesai" di `inventory-apk/ROADMAP.md` utk daftar persis) sudah diporting & **diverifikasi
+  live** terhadap database produksi, termasuk posting stok WAC asli lewat
+  `Support/StockPosting.php` (sekarang juga dukung
   `decrement_outstanding_in`/`decrement_outstanding_out`, dipakai StockIn/StockOut). Stock In
   sengaja TIDAK replikasi integrasi shadow-SJ (Surat Jalan) versi asli -- lihat docblock
-  `Inventory/Controllers/StockInController.php`. Endpoint lain (Done/History/Manual/retur/
+  `Inventory/Controllers/StockInController.php`. **Stock In/Out Manual** (transaksi ad-hoc di
+  luar PO/request produksi, **AdminGudang-only** -- gate role ditambahkan sadar, versi Laravel
+  asli tidak punya sama sekali) posting ke `wh_t_stock_adjustment` (tabel yang sama dgn adjustment
+  Opname), detail lengkap di `inventory-apk/ROADMAP.md`. Endpoint lain (Done/History/retur/
   export, approve/reject/cancel PR, dst) masih backlog, belum ada UI-nya di FE atau bukan aksi
   gudang. **⚠️ Bug data SHARED ditemukan (belum diperbaiki di sumbernya)**: baris
   `cfg_m_doc_number` utk `'PR'` py `reset_period=MONTHLY` tapi `format_pattern` (`PR-{NNNNN}`)

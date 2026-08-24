@@ -158,7 +158,9 @@ class AdminController extends Controller
 
         $driverId = SupirProfile::ensure($pdo, (int) $user['user_id']);
 
-        $dir = dirname(__DIR__, 2) . "/public/uploads/drivers/{$driverId}";
+        // dirname(__DIR__, 3), BUKAN 2 -- bug path lama (2026-08-21, sudah
+        // diperbaiki 2026-08-24), lihat komentar lengkap di DriverController.php.
+        $dir = dirname(__DIR__, 3) . "/public/uploads/drivers/{$driverId}";
         $fotoSim = PhotoStorage::save($request, 'foto_sim', $dir, "uploads/drivers/{$driverId}", 'sim');
         $pdo->prepare('UPDATE ekspedisi_m_supir SET foto_sim = :path WHERE id = :id')
             ->execute(['path' => $fotoSim, 'id' => $driverId]);
@@ -212,7 +214,9 @@ class AdminController extends Controller
         ]);
         $driverId = (int) $pdo->lastInsertId();
 
-        $dir = dirname(__DIR__, 2) . "/public/uploads/drivers/{$driverId}";
+        // dirname(__DIR__, 3), BUKAN 2 -- bug path lama (2026-08-21, sudah
+        // diperbaiki 2026-08-24), lihat komentar lengkap di DriverController.php.
+        $dir = dirname(__DIR__, 3) . "/public/uploads/drivers/{$driverId}";
         $fotoKtp = PhotoStorage::save($request, 'foto_ktp', $dir, "uploads/drivers/{$driverId}", 'ktp');
         $fotoSim = PhotoStorage::save($request, 'foto_sim', $dir, "uploads/drivers/{$driverId}", 'sim');
         $fotoStnk = PhotoStorage::save($request, 'foto_stnk', $dir, "uploads/drivers/{$driverId}", 'stnk');
@@ -316,7 +320,9 @@ class AdminController extends Controller
             return $this->error($response, 'Supir tidak ditemukan.', 404);
         }
 
-        $dir = dirname(__DIR__, 2) . "/public/uploads/drivers/{$driverId}";
+        // dirname(__DIR__, 3), BUKAN 2 -- bug path lama (2026-08-21, sudah
+        // diperbaiki 2026-08-24), lihat komentar lengkap di DriverController.php.
+        $dir = dirname(__DIR__, 3) . "/public/uploads/drivers/{$driverId}";
         $slots = ['foto_sim' => 'sim', 'foto_ktp' => 'ktp', 'foto_stnk' => 'stnk'];
 
         $set = [];

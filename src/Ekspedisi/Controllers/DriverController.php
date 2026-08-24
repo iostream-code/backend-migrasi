@@ -141,7 +141,18 @@ class DriverController extends Controller
         }
 
         $tripId = (int) $trip['id'];
-        $dir = dirname(__DIR__, 2) . "/public/uploads/trips/{$tripId}";
+        // dirname(__DIR__, 3) -- BUKAN 2 (bug 2026-08-21, sudah diperbaiki
+        // 2026-08-24): file ini dulu di src/Controllers/ (2 level ke root),
+        // dipindah ke src/Ekspedisi/Controllers/ saat restrukturisasi modul
+        // (1 level lebih dalam) tapi angka level-nya tidak ikut disesuaikan
+        // -- akibatnya SEMUA foto checkpoint yg diupload SEJAK restrukturisasi
+        // itu ketulis ke folder salah (src/public/uploads/... yg tidak
+        // pernah ada, dibikin `mkdir(..., true)` diam-diam) alih-alih
+        // public/uploads/... yang sungguhan dilayani webserver -- baris DB
+        // tetap kesimpen normal (makanya foto "ada" di database tapi 404
+        // sungguhan diakses via URL). Lihat juga AdminController.php &
+        // SuratJalanController.php, bug yang sama persis.
+        $dir = dirname(__DIR__, 3) . "/public/uploads/trips/{$tripId}";
         // Nama file = $type ("berangkat"/"serah_terima"/"sj") -- bukan
         // timestamp, jadi re-upload checkpoint yang sama TIMPA file lama di
         // disk (konsisten dgn UNIQUE trip_id+type di DB, bukan numpuk file).
