@@ -23,8 +23,41 @@ use RuntimeException;
  * inventory-apk suatu saat di-pointing kesini.
  *
  * TIDAK diport di pass ini (lihat inventory-apk/ROADMAP.md): getStockOutDone,
- * getStockOutHistory, flow retur produksi 3-tahap
- * (inbox/approve/receive/reject/detail/history) -- belum dipakai FE sekarang.
+ * getStockOutHistory.
+ *
+ * **Retur Produksi** (2026-08-24, `getStockOutReturn{Inbox,History,Detail}`/
+ * `{approve,receive,reject}StockOutReturn`) -- port dari
+ * `App\Services\Inventory\StockOut\ReturProduksiService` (Eloquent). Retur
+ * DIBUAT di `backend-production` lewat `produksi-apk` (POST
+ * /produksi/retur-material, endpoint itu TIDAK diport ke sini -- tabel
+ * `prd_t_retur_produksi(_detail)` SHARED dgn DB yang sama, jadi baris yang
+ * dibuat di sana langsung kebaca di sini). Modul ini murni sisi GUDANG:
+ * approve (tanpa gerak stok) -> receive (SATU-SATUNYA titik stok naik,
+ * lewat StockPosting::postIn(), reuse apa adanya) -> selesai; atau reject
+ * (boleh dari SUBMITTED maupun APPROVED, TIDAK PERNAH ada gerak stok krn
+ * memang belum pernah bergerak sebelum RECEIVED di alur ini -- beda dari
+ * sisi Stock-In/Purchase yang butuh rollback stok kalau reject dari
+ * APPROVED). GOOD/DAMAGED/EXPIRED tetap SAMA-SAMA menambah qty_on_hand,
+ * beda cuma `transaction_type` ledger (`RECEIVE_RETUR_DAMAGED` vs
+ * `RECEIVE_RETUR_PRODUKSI`) -- tidak ada gudang karantina terpisah,
+ * dikutip apa adanya dari versi asli (keterbatasan yang sudah diketahui,
+ * BUKAN bug port). Reversal `qty_issued` di `prd_t_req_material_detail`
+ * (via `reverseQtyIssued()`, reuse `recalculateReqStatus()` yang sudah ada
+ * di file ini) HANYA terjadi kalau `source_type=ISSUE` DAN
+ * `reason IN (DAMAGED, WRONG_SPEC)` -- EXCESS/OTHER TIDAK direversal.
+ *
+ * **[PERBAIKAN KEAMANAN dari versi asli, sadar]** approve/receive/reject
+ * AdminGudang-only (role dari JWT) -- versi Laravel asli endpoint2 ini
+ * TANPA AUTH SAMA SEKALI (route top-level, tidak ada middleware apa pun).
+ * Endpoint baca (inbox/history/detail) TIDAK digate role, sama seperti
+ * endpoint baca lain di modul ini.
+ *
+ * **Skema**: `prd_t_retur_produksi` di `db_dump.sql` (snapshot lama) TIDAK
+ * py kolom `rejected_at`/`rejected_by`/`rejected_reason` walau Eloquent
+ * model & service asli jelas memakainya -- dicek `SHOW COLUMNS` live
+ * (2026-08-24), memang belum ada di produksi. Ditambahkan via
+ * `database/inventory/01_add_retur_produksi_reject_columns.sql` (file
+ * skema PERTAMA modul Inventory, sudah dijalankan ke produksi).
  *
  * **Manual Stock Out** (2026-08-23, `submitStockOutManual()`) -- port dari
  * `App\Services\Inventory\StockOut\ManualStockOutService::submit()`
@@ -354,6 +387,338 @@ class StockOutController
         }
     }
 
+    /**
+     * POST /inventory/stock-out/get-stockout-return-inbox -- kerjaan yang
+     * masih perlu ditindaklanjuti gudang (status SUBMITTED/APPROVED), urut
+     * retur_date ASC (FIFO, sama persis versi asli).
+     */
+    public function getStockOutReturnInbox(Request $request, Response $response): Response
+    {
+        $body = (array) $request->getParsedBody();
+        $warehouseId = (int) ($body['warehouse_id'] ?? 0);
+        if ($warehouseId <= 0) {
+            return $this->apiError($response, 'warehouse_id wajib diisi.', 422);
+        }
+        $statusFilter = $body['status_filter'] ?? 'all';
+        $search = self::nullableString($body['search'] ?? null);
+        $month = is_numeric($body['filter_month'] ?? null) ? (int) $body['filter_month'] : null;
+        $year = is_numeric($body['filter_year'] ?? null) ? (int) $body['filter_year'] : null;
+
+        $pdo = Database::connection();
+
+        $sql = "SELECT rp.*, d.name AS department_name
+                FROM prd_t_retur_produksi rp
+                LEFT JOIN shared_m_department d ON d.id = rp.department_id
+                WHERE rp.warehouse_id = ? AND rp.deleted_at IS NULL
+                  AND rp.status IN ('SUBMITTED','APPROVED')";
+        $params = [$warehouseId];
+
+        if ($statusFilter === 'submitted') {
+            $sql .= ' AND rp.status = ?';
+            $params[] = 'SUBMITTED';
+        } elseif ($statusFilter === 'approved') {
+            $sql .= ' AND rp.status = ?';
+            $params[] = 'APPROVED';
+        }
+        if ($search !== null) {
+            $sql .= ' AND (rp.retur_number LIKE ? OR rp.notes LIKE ?)';
+            $like = "%{$search}%";
+            $params[] = $like;
+            $params[] = $like;
+        }
+        if ($month && $year) {
+            $sql .= ' AND MONTH(rp.retur_date) = ? AND YEAR(rp.retur_date) = ?';
+            $params[] = $month;
+            $params[] = $year;
+        } elseif ($year) {
+            $sql .= ' AND YEAR(rp.retur_date) = ?';
+            $params[] = $year;
+        }
+        $sql .= ' ORDER BY rp.retur_date ASC';
+
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+
+        return $this->apiSuccess($response, ['retur_list' => $this->formatReturList($pdo, $stmt->fetchAll())]);
+    }
+
+    /**
+     * POST /inventory/stock-out/get-stockout-return-history -- semua status,
+     * urut FIELD(status,...) lalu retur_date DESC (sama persis versi asli).
+     * `source_type` dinormalisasi uppercase (FE lazimnya kirim lowercase
+     * issue/manual, kolom DB ISSUE/MANUAL -- versi Laravel asli py bug
+     * case-mismatch di sini, diperbaiki bukan direplikasi).
+     */
+    public function getStockOutReturnHistory(Request $request, Response $response): Response
+    {
+        $body = (array) $request->getParsedBody();
+        $warehouseId = (int) ($body['warehouse_id'] ?? 0);
+        if ($warehouseId <= 0) {
+            return $this->apiError($response, 'warehouse_id wajib diisi.', 422);
+        }
+        $search = self::nullableString($body['search'] ?? null);
+        $month = is_numeric($body['filter_month'] ?? null) ? (int) $body['filter_month'] : null;
+        $year = is_numeric($body['filter_year'] ?? null) ? (int) $body['filter_year'] : null;
+        $sourceType = self::nullableString($body['source_type'] ?? null);
+        $sourceType = $sourceType !== null ? strtoupper($sourceType) : null;
+
+        $pdo = Database::connection();
+
+        $sql = "SELECT rp.*, d.name AS department_name
+                FROM prd_t_retur_produksi rp
+                LEFT JOIN shared_m_department d ON d.id = rp.department_id
+                WHERE rp.warehouse_id = ? AND rp.deleted_at IS NULL";
+        $params = [$warehouseId];
+
+        if ($sourceType !== null && in_array($sourceType, ['ISSUE', 'MANUAL'], true)) {
+            $sql .= ' AND rp.source_type = ?';
+            $params[] = $sourceType;
+        }
+        if ($search !== null) {
+            $sql .= ' AND (rp.retur_number LIKE ? OR rp.notes LIKE ?)';
+            $like = "%{$search}%";
+            $params[] = $like;
+            $params[] = $like;
+        }
+        if ($month && $year) {
+            $sql .= ' AND MONTH(rp.retur_date) = ? AND YEAR(rp.retur_date) = ?';
+            $params[] = $month;
+            $params[] = $year;
+        } elseif ($year) {
+            $sql .= ' AND YEAR(rp.retur_date) = ?';
+            $params[] = $year;
+        }
+        $sql .= " ORDER BY FIELD(rp.status,'SUBMITTED','APPROVED','RECEIVED','CANCELLED'), rp.retur_date DESC";
+
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+
+        return $this->apiSuccess($response, ['retur_list' => $this->formatReturList($pdo, $stmt->fetchAll())]);
+    }
+
+    public function getStockOutReturnDetail(Request $request, Response $response): Response
+    {
+        $body = (array) $request->getParsedBody();
+        $returId = (int) ($body['retur_id'] ?? 0);
+        if ($returId <= 0) {
+            return $this->apiError($response, 'retur_id wajib diisi.', 422);
+        }
+
+        $pdo = Database::connection();
+        $retur = $this->findRetur($pdo, $returId);
+        if (!$retur) {
+            return $this->apiNotFound($response, 'Retur tidak ditemukan');
+        }
+
+        return $this->apiSuccess($response, [
+            'retur' => $this->formatReturHeader($pdo, $retur),
+            'items' => $this->fetchReturDetailItems($pdo, $returId),
+        ]);
+    }
+
+    /**
+     * POST /inventory/stock-out/stockout-return/{id}/approve -- AdminGudang-
+     * only. Tanpa gerak stok, murni transisi status SUBMITTED -> APPROVED.
+     */
+    public function approveStockOutReturn(Request $request, Response $response, array $args): Response
+    {
+        $role = (string) $request->getAttribute('role');
+        if ($role !== 'AdminGudang') {
+            return $this->apiError($response, 'Hanya AdminGudang yang boleh approve retur produksi.', 403);
+        }
+
+        $returId = (int) ($args['id'] ?? 0);
+        $body = (array) $request->getParsedBody();
+        $userId = (int) ($request->getAttribute('user_id') ?? 0);
+        $notes = self::nullableString($body['notes'] ?? null);
+
+        $pdo = Database::connection();
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare('SELECT * FROM prd_t_retur_produksi WHERE id = :id FOR UPDATE');
+            $stmt->execute(['id' => $returId]);
+            $retur = $stmt->fetch();
+            if (!$retur) {
+                throw new RuntimeException('Retur tidak ditemukan');
+            }
+            if ($retur['status'] !== 'SUBMITTED') {
+                throw new RuntimeException("Retur {$retur['retur_number']} tidak bisa di-approve (status saat ini: {$retur['status']}). Harus berstatus SUBMITTED.");
+            }
+
+            $now = date('Y-m-d H:i:s');
+            $pdo->prepare(
+                "UPDATE prd_t_retur_produksi SET status = 'APPROVED', approved_by = :uid, approved_at = :now, notes = :notes, updated_by = :uid2, updated_at = :now2 WHERE id = :id"
+            )->execute([
+                'uid' => $userId ?: null,
+                'now' => $now,
+                'notes' => self::appendNote($retur['notes'], $notes),
+                'uid2' => $userId ?: null,
+                'now2' => $now,
+                'id' => $returId,
+            ]);
+
+            $pdo->commit();
+
+            return $this->apiSuccess(
+                $response,
+                ['retur_id' => $returId, 'retur_number' => $retur['retur_number'], 'status' => 'APPROVED'],
+                "Retur {$retur['retur_number']} berhasil di-approve"
+            );
+        } catch (RuntimeException $e) {
+            $pdo->rollBack();
+            return $this->apiError($response, $e->getMessage(), 400);
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * POST /inventory/stock-out/stockout-return/{id}/receive -- AdminGudang-
+     * only. SATU-SATUNYA titik stok naik di alur ini. Double-lock (baca
+     * detail dulu, lalu re-lock header & re-cek status APPROVED sebelum
+     * posting) mereplikasi guard concurrency versi asli persis.
+     */
+    public function receiveStockOutReturn(Request $request, Response $response, array $args): Response
+    {
+        $role = (string) $request->getAttribute('role');
+        if ($role !== 'AdminGudang') {
+            return $this->apiError($response, 'Hanya AdminGudang yang boleh menerima retur produksi.', 403);
+        }
+
+        $returId = (int) ($args['id'] ?? 0);
+        $body = (array) $request->getParsedBody();
+        $userId = (int) ($request->getAttribute('user_id') ?? 0);
+        $notes = self::nullableString($body['notes'] ?? null);
+
+        $pdo = Database::connection();
+        $pdo->beginTransaction();
+        try {
+            $retur = $this->findRetur($pdo, $returId);
+            if (!$retur) {
+                throw new RuntimeException('Retur tidak ditemukan');
+            }
+            if ($retur['status'] !== 'APPROVED') {
+                throw new RuntimeException("Retur {$retur['retur_number']} tidak bisa diterima (status saat ini: {$retur['status']}). Harus berstatus APPROVED.");
+            }
+            $details = $this->fetchReturDetailItems($pdo, $returId, true);
+
+            $lockStmt = $pdo->prepare('SELECT status FROM prd_t_retur_produksi WHERE id = :id FOR UPDATE');
+            $lockStmt->execute(['id' => $returId]);
+            if ($lockStmt->fetchColumn() !== 'APPROVED') {
+                throw new RuntimeException("Retur {$retur['retur_number']} berubah status secara bersamaan. Coba lagi.");
+            }
+
+            foreach ($details as $detail) {
+                $isDamaged = in_array($detail['condition_status_raw'], ['DAMAGED', 'EXPIRED'], true);
+                StockPosting::postIn($pdo, [
+                    'warehouse_id' => (int) $retur['warehouse_id'],
+                    'material_id' => $detail['material_id_raw'],
+                    'qty' => $detail['qty_raw'],
+                    'unit_cost' => $detail['unit_cost_raw'],
+                    'transaction_type' => $isDamaged ? 'RECEIVE_RETUR_DAMAGED' : 'RECEIVE_RETUR_PRODUKSI',
+                    'reference_type' => 'prd_t_retur_produksi',
+                    'reference_id' => $returId,
+                    'reference_number' => $retur['retur_number'],
+                    'remarks' => "Retur produksi {$retur['retur_number']}" . ($isDamaged ? " [kondisi: {$detail['condition_status_raw']}]" : ''),
+                    'created_by' => $userId ?: null,
+                ]);
+            }
+
+            if ($retur['source_type'] === 'ISSUE' && in_array($retur['reason'], ['DAMAGED', 'WRONG_SPEC'], true)) {
+                $this->reverseQtyIssued($pdo, $details);
+            }
+
+            $now = date('Y-m-d H:i:s');
+            $pdo->prepare(
+                "UPDATE prd_t_retur_produksi SET status = 'RECEIVED', received_by = :uid, received_at = :now, notes = :notes, updated_by = :uid2, updated_at = :now2 WHERE id = :id"
+            )->execute([
+                'uid' => $userId ?: null,
+                'now' => $now,
+                'notes' => self::appendNote($retur['notes'], $notes),
+                'uid2' => $userId ?: null,
+                'now2' => $now,
+                'id' => $returId,
+            ]);
+
+            $pdo->commit();
+
+            return $this->apiSuccess(
+                $response,
+                ['retur_id' => $returId, 'retur_number' => $retur['retur_number'], 'status' => 'RECEIVED'],
+                "Retur {$retur['retur_number']} berhasil diterima, stok sudah diperbarui"
+            );
+        } catch (InvalidArgumentException | RuntimeException $e) {
+            $pdo->rollBack();
+            return $this->apiError($response, $e->getMessage(), 400);
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * POST /inventory/stock-out/stockout-return/{id}/reject -- AdminGudang-
+     * only. Boleh dari SUBMITTED maupun APPROVED (stok belum pernah bergerak
+     * di kedua status itu, jadi tidak perlu rollback -- beda dari sisi
+     * Stock-In/Purchase). `reason` wajib.
+     */
+    public function rejectStockOutReturn(Request $request, Response $response, array $args): Response
+    {
+        $role = (string) $request->getAttribute('role');
+        if ($role !== 'AdminGudang') {
+            return $this->apiError($response, 'Hanya AdminGudang yang boleh reject retur produksi.', 403);
+        }
+
+        $returId = (int) ($args['id'] ?? 0);
+        $body = (array) $request->getParsedBody();
+        $userId = (int) ($request->getAttribute('user_id') ?? 0);
+        $reason = self::nullableString($body['reason'] ?? null);
+        if ($reason === null) {
+            return $this->apiError($response, 'Alasan reject wajib diisi.', 422);
+        }
+
+        $pdo = Database::connection();
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare('SELECT * FROM prd_t_retur_produksi WHERE id = :id FOR UPDATE');
+            $stmt->execute(['id' => $returId]);
+            $retur = $stmt->fetch();
+            if (!$retur) {
+                throw new RuntimeException('Retur tidak ditemukan');
+            }
+            if (!in_array($retur['status'], ['SUBMITTED', 'APPROVED'], true)) {
+                throw new RuntimeException("Retur {$retur['retur_number']} tidak bisa di-reject (status saat ini: {$retur['status']}). Hanya SUBMITTED atau APPROVED yang bisa di-reject.");
+            }
+
+            $now = date('Y-m-d H:i:s');
+            $pdo->prepare(
+                "UPDATE prd_t_retur_produksi SET status = 'CANCELLED', rejected_by = :uid, rejected_at = :now, rejected_reason = :reason, updated_by = :uid2, updated_at = :now2 WHERE id = :id"
+            )->execute([
+                'uid' => $userId ?: null,
+                'now' => $now,
+                'reason' => $reason,
+                'uid2' => $userId ?: null,
+                'now2' => $now,
+                'id' => $returId,
+            ]);
+
+            $pdo->commit();
+
+            return $this->apiSuccess(
+                $response,
+                ['retur_id' => $returId, 'retur_number' => $retur['retur_number'], 'status' => 'CANCELLED'],
+                "Retur {$retur['retur_number']} berhasil di-reject"
+            );
+        } catch (RuntimeException $e) {
+            $pdo->rollBack();
+            return $this->apiError($response, $e->getMessage(), 400);
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+    }
+
     // ─── Private helpers ────────────────────────────────────────────
 
     /** unit_cost di-resolve StockPosting::postOut() sendiri dari avg_unit_cost saat ini (WAC). */
@@ -617,5 +982,270 @@ class StockOutController
     private static function nullableString($v): ?string
     {
         return (is_string($v) && trim($v) !== '') ? trim($v) : null;
+    }
+
+    // ─── Retur Produksi helpers ─────────────────────────────────────
+
+    /**
+     * Port dari ReturProduksiService::reverseQtyIssued() -- dipanggil HANYA
+     * dari receiveStockOutReturn() saat source_type=ISSUE & reason
+     * DAMAGED/WRONG_SPEC (lihat guard di sana). Map issue_detail_id ->
+     * req_material_detail_id via prd_t_material_issue_detail, agregasi qty
+     * retur per baris request, lock FOR UPDATE, floor di 0, lalu reuse
+     * recalculateReqStatus() yang sudah ada di file ini per req_material_id
+     * yang terpengaruh.
+     */
+    private function reverseQtyIssued(PDO $pdo, array $details): void
+    {
+        $issueDetailIds = array_values(array_unique(array_filter(array_column($details, 'issue_detail_id_raw'))));
+        if (empty($issueDetailIds)) {
+            return;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($issueDetailIds), '?'));
+        $stmt = $pdo->prepare("SELECT id, req_material_detail_id FROM prd_t_material_issue_detail WHERE id IN ({$placeholders})");
+        $stmt->execute($issueDetailIds);
+        $issueToReqDetail = [];
+        foreach ($stmt->fetchAll() as $row) {
+            $issueToReqDetail[(int) $row['id']] = (int) $row['req_material_detail_id'];
+        }
+
+        $qtyByReqDetail = [];
+        foreach ($details as $d) {
+            $issueDetailId = $d['issue_detail_id_raw'] ?? null;
+            if (!$issueDetailId || !isset($issueToReqDetail[$issueDetailId])) {
+                continue;
+            }
+            $reqDetailId = $issueToReqDetail[$issueDetailId];
+            $qtyByReqDetail[$reqDetailId] = ($qtyByReqDetail[$reqDetailId] ?? 0) + (float) $d['qty_raw'];
+        }
+
+        $affectedReqIds = [];
+        foreach ($qtyByReqDetail as $reqDetailId => $qtyRetur) {
+            $lockStmt = $pdo->prepare('SELECT req_material_id, qty_issued FROM prd_t_req_material_detail WHERE id = :id FOR UPDATE');
+            $lockStmt->execute(['id' => $reqDetailId]);
+            $row = $lockStmt->fetch();
+            if (!$row) {
+                continue;
+            }
+            $pdo->prepare('UPDATE prd_t_req_material_detail SET qty_issued = :qty WHERE id = :id')
+                ->execute(['qty' => max(0, (float) $row['qty_issued'] - $qtyRetur), 'id' => $reqDetailId]);
+            $affectedReqIds[(int) $row['req_material_id']] = true;
+        }
+
+        foreach (array_keys($affectedReqIds) as $reqId) {
+            $stmt2 = $pdo->prepare('SELECT status FROM prd_t_req_material WHERE id = :id');
+            $stmt2->execute(['id' => $reqId]);
+            $this->recalculateReqStatus($pdo, $reqId, (string) $stmt2->fetchColumn());
+        }
+    }
+
+    private static function appendNote(?string $existing, ?string $addition): ?string
+    {
+        if ($addition === null) {
+            return $existing;
+        }
+        $note = 'Catatan gudang: ' . $addition;
+        return $existing ? "{$existing} | {$note}" : $note;
+    }
+
+    private function findRetur(PDO $pdo, int $returId): ?array
+    {
+        $stmt = $pdo->prepare('SELECT * FROM prd_t_retur_produksi WHERE id = :id AND deleted_at IS NULL');
+        $stmt->execute(['id' => $returId]);
+        $row = $stmt->fetch();
+        return $row ?: null;
+    }
+
+    /** @return array<int, array> daftar retur ter-format, termasuk items_summary & source_ref per baris. */
+    private function formatReturList(PDO $pdo, array $rows): array
+    {
+        if (empty($rows)) {
+            return [];
+        }
+        $summaryByRetur = $this->fetchItemsSummary($pdo, array_column($rows, 'id'));
+        $sourceRefByRetur = $this->fetchSourceRefs($pdo, $rows);
+        $userNames = $this->fetchUserNames($pdo, $rows);
+
+        return array_map(function ($r) use ($summaryByRetur, $sourceRefByRetur, $userNames) {
+            $id = (int) $r['id'];
+            $items = $summaryByRetur[$id] ?? [];
+            return [
+                'id' => $id,
+                'retur_number' => $r['retur_number'],
+                'retur_date' => $r['retur_date'] ? date('d-m-Y', strtotime($r['retur_date'])) : '-',
+                'department_name' => $r['department_name'] ?? '-',
+                'source_type' => $r['source_type'],
+                'source_ref' => $sourceRefByRetur[$id] ?? null,
+                'reason' => $r['reason'],
+                'status' => $r['status'],
+                'submitted_by' => $userNames[(int) ($r['created_by'] ?? 0)] ?? null,
+                'total_items' => count($items),
+                'items_summary' => $items,
+            ];
+        }, $rows);
+    }
+
+    private function fetchItemsSummary(PDO $pdo, array $returIds): array
+    {
+        $returIds = array_values(array_unique(array_map('intval', $returIds)));
+        if (empty($returIds)) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($returIds), '?'));
+        $stmt = $pdo->prepare(
+            "SELECT rpd.retur_produksi_id, m.name AS material_name, m.code AS material_code,
+                    rpd.qty, u.code AS unit_code, rpd.condition_status
+             FROM prd_t_retur_produksi_detail rpd
+             LEFT JOIN wh_m_material m ON m.id = rpd.material_id
+             LEFT JOIN shared_m_unit u ON u.id = rpd.unit_id
+             WHERE rpd.retur_produksi_id IN ({$placeholders})"
+        );
+        $stmt->execute($returIds);
+        $out = [];
+        foreach ($stmt->fetchAll() as $r) {
+            $out[(int) $r['retur_produksi_id']][] = [
+                'material_name' => $r['material_name'] ?? '-',
+                'material_code' => $r['material_code'] ?? '-',
+                'qty' => (float) $r['qty'],
+                'unit' => $r['unit_code'] ?? '-',
+                'condition_status' => $r['condition_status'],
+            ];
+        }
+        return $out;
+    }
+
+    /** @return array<int,string> retur_id => nomor dokumen sumber (issue_number / adjustment_number). */
+    private function fetchSourceRefs(PDO $pdo, array $rows): array
+    {
+        $out = [];
+        $issueIds = array_values(array_unique(array_filter(array_column($rows, 'issue_id'))));
+        if (!empty($issueIds)) {
+            $placeholders = implode(',', array_fill(0, count($issueIds), '?'));
+            $stmt = $pdo->prepare("SELECT id, issue_number FROM prd_t_material_issue WHERE id IN ({$placeholders})");
+            $stmt->execute($issueIds);
+            $byIssue = [];
+            foreach ($stmt->fetchAll() as $r) {
+                $byIssue[(int) $r['id']] = $r['issue_number'];
+            }
+            foreach ($rows as $row) {
+                if (!empty($row['issue_id']) && isset($byIssue[(int) $row['issue_id']])) {
+                    $out[(int) $row['id']] = $byIssue[(int) $row['issue_id']];
+                }
+            }
+        }
+        $adjIds = array_values(array_unique(array_filter(array_column($rows, 'source_adjustment_id'))));
+        if (!empty($adjIds)) {
+            $placeholders = implode(',', array_fill(0, count($adjIds), '?'));
+            $stmt = $pdo->prepare("SELECT id, adjustment_number FROM wh_t_stock_adjustment WHERE id IN ({$placeholders})");
+            $stmt->execute($adjIds);
+            $byAdj = [];
+            foreach ($stmt->fetchAll() as $r) {
+                $byAdj[(int) $r['id']] = $r['adjustment_number'];
+            }
+            foreach ($rows as $row) {
+                if (!empty($row['source_adjustment_id']) && isset($byAdj[(int) $row['source_adjustment_id']])) {
+                    $out[(int) $row['id']] = $byAdj[(int) $row['source_adjustment_id']];
+                }
+            }
+        }
+        return $out;
+    }
+
+    /** @return array<int,string> user_id => nama_lengkap, dikumpulkan dari created_by/approved_by/received_by/rejected_by baris yang diberikan. */
+    private function fetchUserNames(PDO $pdo, array $rows): array
+    {
+        $ids = [];
+        foreach ($rows as $r) {
+            foreach (['created_by', 'approved_by', 'received_by', 'rejected_by'] as $col) {
+                if (!empty($r[$col])) {
+                    $ids[] = (int) $r[$col];
+                }
+            }
+        }
+        $ids = array_values(array_unique($ids));
+        if (empty($ids)) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $pdo->prepare("SELECT user_id, nama_lengkap FROM shared_m_users WHERE user_id IN ({$placeholders})");
+        $stmt->execute($ids);
+        $out = [];
+        foreach ($stmt->fetchAll() as $r) {
+            $out[(int) $r['user_id']] = $r['nama_lengkap'];
+        }
+        return $out;
+    }
+
+    private function formatReturHeader(PDO $pdo, array $r): array
+    {
+        $id = (int) $r['id'];
+        $sourceRef = $this->fetchSourceRefs($pdo, [$r]);
+        $userNames = $this->fetchUserNames($pdo, [$r]);
+
+        $deptStmt = $pdo->prepare('SELECT name FROM shared_m_department WHERE id = :id');
+        $deptStmt->execute(['id' => $r['department_id']]);
+        $deptName = $deptStmt->fetchColumn();
+
+        return [
+            'id' => $id,
+            'retur_number' => $r['retur_number'],
+            'retur_date' => $r['retur_date'] ? date('d-m-Y', strtotime($r['retur_date'])) : '-',
+            'warehouse_id' => (int) $r['warehouse_id'],
+            'department_id' => (int) $r['department_id'],
+            'department_name' => $deptName ?: '-',
+            'source_type' => $r['source_type'],
+            'source_ref' => $sourceRef[$id] ?? null,
+            'reason' => $r['reason'],
+            'status' => $r['status'],
+            'notes' => $r['notes'],
+            'submitted_by' => $userNames[(int) ($r['created_by'] ?? 0)] ?? null,
+            'approved_by' => $userNames[(int) ($r['approved_by'] ?? 0)] ?? null,
+            'approved_at' => $r['approved_at'] ? date('d-m-Y H:i', strtotime($r['approved_at'])) : null,
+            'received_by' => $userNames[(int) ($r['received_by'] ?? 0)] ?? null,
+            'received_at' => $r['received_at'] ? date('d-m-Y H:i', strtotime($r['received_at'])) : null,
+            'rejected_by' => $userNames[(int) ($r['rejected_by'] ?? 0)] ?? null,
+            'rejected_at' => $r['rejected_at'] ? date('d-m-Y H:i', strtotime($r['rejected_at'])) : null,
+            'rejected_reason' => $r['rejected_reason'],
+        ];
+    }
+
+    /**
+     * @return array daftar item retur ter-format. $withRaw=true (dipakai
+     * receiveStockOutReturn()) menyertakan field `*_raw` yang dibutuhkan
+     * posting stok/reversal -- TIDAK dikirim ke response FE biasa.
+     */
+    private function fetchReturDetailItems(PDO $pdo, int $returId, bool $withRaw = false): array
+    {
+        $stmt = $pdo->prepare(
+            'SELECT rpd.*, m.code AS material_code, m.name AS material_name, u.code AS unit_code
+             FROM prd_t_retur_produksi_detail rpd
+             LEFT JOIN wh_m_material m ON m.id = rpd.material_id
+             LEFT JOIN shared_m_unit u ON u.id = rpd.unit_id
+             WHERE rpd.retur_produksi_id = :id'
+        );
+        $stmt->execute(['id' => $returId]);
+
+        return array_map(function ($d) use ($withRaw) {
+            $row = [
+                'detail_id' => (int) $d['id'],
+                'material_id' => (int) $d['material_id'],
+                'material_code' => $d['material_code'] ?? '-',
+                'material_name' => $d['material_name'] ?? '-',
+                'unit' => $d['unit_code'] ?? '-',
+                'qty' => (float) $d['qty'],
+                'unit_cost' => (float) $d['unit_cost'],
+                'condition_status' => $d['condition_status'],
+                'notes' => $d['notes'],
+            ];
+            if ($withRaw) {
+                $row['material_id_raw'] = (int) $d['material_id'];
+                $row['qty_raw'] = (float) $d['qty'];
+                $row['unit_cost_raw'] = (float) $d['unit_cost'];
+                $row['condition_status_raw'] = $d['condition_status'];
+                $row['issue_detail_id_raw'] = $d['issue_detail_id'] ? (int) $d['issue_detail_id'] : null;
+            }
+            return $row;
+        }, $stmt->fetchAll());
     }
 }

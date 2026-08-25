@@ -12,8 +12,10 @@ declare(strict_types=1);
 // App\Inventory\Controllers\AuthController. Material + Opname (2026-08-21)
 // + Home Dashboard/Stock In/Stock Out (2026-08-22, subset yang dipakai FE
 // saja) + Manual Stock In/Out (2026-08-23, AdminGudang-only -- lihat catatan
-// di masing-masing Controller) SUDAH diport. Excel import/export,
-// retur/replacement BELUM, itu backlog (lihat inventory-apk/ROADMAP.md).
+// di masing-masing Controller) + Retur Produksi/Stock Out (2026-08-24, lihat
+// docblock StockOutController.php) SUDAH diport. Excel import/export, retur/
+// replacement Stock In (ke supplier + replacement) BELUM, itu backlog
+// (lihat inventory-apk/ROADMAP.md).
 // /ping tetap dipertahankan sbg placeholder ringan pembuktian
 // login+JWT+AuthMiddleware nyambung, tidak mengganggu apa pun kalau dihapus
 // nanti.
@@ -103,6 +105,15 @@ return function (App $app): void {
                 $so->post('/submit-stockout', [$stockOut, 'submitStockOut']);
                 // Manual Stock Out (2026-08-23) -- AdminGudang-only, sama pola dgn stock-in di atas.
                 $so->post('/submit-stockout-manual', [$stockOut, 'submitStockOutManual']);
+                // Retur Produksi (2026-08-24) -- baca boleh semua role Gudang,
+                // approve/receive/reject AdminGudang-only (digerbangi di dalam
+                // controller, pola sama Manual Stock In/Out).
+                $so->post('/get-stockout-return-inbox', [$stockOut, 'getStockOutReturnInbox']);
+                $so->post('/get-stockout-return-history', [$stockOut, 'getStockOutReturnHistory']);
+                $so->post('/get-stockout-return-detail', [$stockOut, 'getStockOutReturnDetail']);
+                $so->post('/stockout-return/{id}/approve', [$stockOut, 'approveStockOutReturn']);
+                $so->post('/stockout-return/{id}/receive', [$stockOut, 'receiveStockOutReturn']);
+                $so->post('/stockout-return/{id}/reject', [$stockOut, 'rejectStockOutReturn']);
             });
         })->add(new AuthMiddleware());
     });

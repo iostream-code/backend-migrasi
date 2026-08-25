@@ -67,9 +67,19 @@ pindah, lihat `src/Ekspedisi/`).
   `Inventory/Controllers/StockInController.php`. **Stock In/Out Manual** (transaksi ad-hoc di
   luar PO/request produksi, **AdminGudang-only** -- gate role ditambahkan sadar, versi Laravel
   asli tidak punya sama sekali) posting ke `wh_t_stock_adjustment` (tabel yang sama dgn adjustment
-  Opname), detail lengkap di `inventory-apk/ROADMAP.md`. Endpoint lain (Done/History/retur/
-  export, approve/reject/cancel PR, dst) masih backlog, belum ada UI-nya di FE atau bukan aksi
-  gudang. **⚠️ Bug data SHARED ditemukan (belum diperbaiki di sumbernya)**: baris
+  Opname), detail lengkap di `inventory-apk/ROADMAP.md`. **Retur Produksi (Stock Out)**
+  (2026-08-24 -- sisi GUDANG saja: Inbox/Riwayat/Detail + Approve/Terima/Tolak atas retur yang
+  DIBUAT di `produksi-apk`/`backend-production` (`POST /produksi/retur-material`, tabel
+  `prd_t_retur_produksi(_detail)` SHARED dgn DB yang sama, endpoint create-nya SENGAJA TIDAK
+  diporting) -- state machine SUBMITTED→APPROVED→RECEIVED (stok naik cuma di RECEIVED, lewat
+  `StockPosting::postIn()`) atau reject ke CANCELLED dari SUBMITTED/APPROVED (tanpa gerak stok di
+  keduanya), AdminGudang-only utk approve/receive/reject (versi asli TANPA AUTH SAMA SEKALI).
+  Kolom `rejected_at/rejected_by/rejected_reason` ternyata belum ada di skema live (drift dari
+  `db_dump.sql`) -- ditambahkan via `database/inventory/01_add_retur_produksi_reject_columns.sql`
+  (file skema pertama modul Inventory). Retur ke supplier + replacement (Stock In) masih backlog,
+  lebih kompleks -- lihat `inventory-apk/ROADMAP.md`. Endpoint lain (Done/History, export,
+  approve/reject/cancel PR, dst) masih backlog, belum ada UI-nya di FE atau bukan aksi gudang.
+  **⚠️ Bug data SHARED ditemukan (belum diperbaiki di sumbernya)**: baris
   `cfg_m_doc_number` utk `'PR'` py `reset_period=MONTHLY` tapi `format_pattern` (`PR-{NNNNN}`)
   tidak menyisipkan tahun/bulan -- reset bulanan bikin nomor collide dgn PR nyata dari bulan
   sebelumnya (`uniq_pr_number` violation). Diredam di `HomeController::createPurchaseRequest()`

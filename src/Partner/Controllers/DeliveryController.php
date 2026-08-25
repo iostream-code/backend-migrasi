@@ -167,8 +167,39 @@ class DeliveryController extends Controller
             $totalStmt->execute(['id' => $idPartnerTransaksi]);
             $totalDiterima = (int) $totalStmt->fetchColumn();
 
-            $pdo->prepare('UPDATE partner_transaksi SET jumlah_diterima = :t WHERE id_partner_transaksi = :id')
-                ->execute(['t' => $totalDiterima, 'id' => $idPartnerTransaksi]);
+            // [FIX] status_penerimaan/tanggal_penerimaan/keterangan sebelumnya tidak
+            // pernah ditulis di sini (bug sama yang diperbaiki di
+            // backend-production::DeliveryController@addDelivery) -- padahal
+            // produksi-apk (js/partner/approval.js::lihatDetailPenerimaan) memakai
+            // status_penerimaan != null utk munculin tombol Approve. Diisi di SETIAP
+            // penerimaan (partial maupun full). keterangan diambil dari
+            // t_penjualan_detail_performa.keterangan (SPK terkait transaksi ini),
+            // bukan input form -- form penerimaan inventory-apk memang tidak punya
+            // field catatan.
+            $ketStmt = $pdo->prepare(
+                'SELECT pdp.keterangan
+                 FROM partner_transaksi pt
+                 JOIN t_penjualan_detail_performa pdp ON pt.penjualan_detail_performa_id = pdp.penjualan_detail_performa_id
+                 WHERE pt.id_partner_transaksi = :id
+                 LIMIT 1'
+            );
+            $ketStmt->execute(['id' => $idPartnerTransaksi]);
+            $penjualanKeterangan = $ketStmt->fetchColumn();
+            if ($penjualanKeterangan === false) {
+                $penjualanKeterangan = null;
+            }
+
+            $pdo->prepare(
+                'UPDATE partner_transaksi
+                 SET jumlah_diterima = :t, status_penerimaan = :status, tanggal_penerimaan = :tgl, keterangan = :ket
+                 WHERE id_partner_transaksi = :id'
+            )->execute([
+                't' => $totalDiterima,
+                'status' => 'SUDAH_DITERIMA',
+                'tgl' => $tanggalDiterima,
+                'ket' => $penjualanKeterangan,
+                'id' => $idPartnerTransaksi,
+            ]);
 
             $pdo->commit();
 
