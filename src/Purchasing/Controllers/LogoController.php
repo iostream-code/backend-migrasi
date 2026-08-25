@@ -85,6 +85,24 @@ class LogoController extends Controller
         $stmt->execute($params);
         $data = $stmt->fetchAll();
 
+        // foto_purchase_logo_selesai/foto_resin_selesai di DB cuma nama file
+        // bare (mis. "foto_purchasing_logo1735000000.jpg", lihat
+        // updateFotoField() di bawah -- disimpan ke public/foto_purchasing_logo/
+        // resp. public/foto_purchasing_resin/, TANPA folder ikut ditulis ke
+        // kolom). Diubah jadi URL absolut di sini (pola sama dgn
+        // DeliveryController::bukti_penerimaan_url) supaya logo.js bisa pakai
+        // langsung sbg <img src> tanpa tahu path fisik di server.
+        $appUrl = rtrim($_ENV['APP_URL'], '/');
+        foreach ($data as &$row) {
+            $row['foto_purchase_logo_selesai'] = $row['foto_purchase_logo_selesai']
+                ? $appUrl . '/foto_purchasing_logo/' . $row['foto_purchase_logo_selesai']
+                : null;
+            $row['foto_resin_selesai'] = $row['foto_resin_selesai']
+                ? $appUrl . '/foto_purchasing_resin/' . $row['foto_resin_selesai']
+                : null;
+        }
+        unset($row);
+
         if (empty($data)) {
             return $this->json($response, [
                 'message' => 'Data tidak ditemukan',
