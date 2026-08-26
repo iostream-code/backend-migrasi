@@ -34,6 +34,17 @@ use Psr\Http\Message\ServerRequestInterface as Request;
  * ekspedisi Pusat, Jakarta (produksi-apk, SuratJalanController::confirmJakarta())
  * cukup KONFIRMASI PENERIMAAN pakai foto begitu barang sampai.
  *
+ * **[SUSULAN 2026-08-26] markReady()/approvedPo()** -- transisi
+ * APPROVED->READY ("Siap Kirim") sebelumnya CUMA bisa dipicu Jakarta dari
+ * produksi-apk (tombol di popup detail PO, lihat _poNextStatuses() di
+ * commit terkait di sana) -- urutannya jadi terbalik (Jakarta harus
+ * "menyiapkan" PO SEBELUM Admin/ekspedisi sempat bikin SJ apa pun, padahal
+ * outstandingPo() di atas cuma nampilkan PO yang SUDAH READY). Dipindah ke
+ * sini: Admin/Pusat (yang justru mengemas & tahu kapan barang siap
+ * diambil/dikirim) yang menandai READY, baru muncul di outstandingPo().
+ * Tombol "Siap Kirim" di produksi-apk-nya sendiri sudah DICABUT (commit
+ * terpisah di repo itu).
+ *
  * Alur status: DRAFT (dibuat di sini) -> SENT (confirm() di sini,
  * qty_shipped naik) -> RECEIVED (confirm-jakarta di produksi-apk,
  * qty_received naik, LUAR jangkauan controller ini sepenuhnya).
@@ -113,6 +124,104 @@ class PoSuratJalanController extends Controller
         }
 
         return $this->json($response, $result);
+    }
+
+    /**
+     * GET /admin/sj-po/approved-po
+     * PO status APPROVED (belum READY) -- daftar yang bisa ditandai "Siap
+     * Kirim" oleh Admin (lihat markReady()). Bentuk response SAMA PERSIS dgn
+     * outstandingPo() (po_id/po_number/supplier_name/items[]) supaya FE bisa
+     * pakai fungsi render yang sama, cuma beda status & tidak ada filter
+     * qty_shippable (item APPROVED belum pernah dikirim sama sekali).
+     */
+    public function approvedPo(Request $request, Response $response): Response
+    {
+        $pdo = Database::connection();
+
+        $stmt = $pdo->prepare(
+            "SELECT po.id, po.po_number, po.po_date, po.supplier_id, s.supplier_nama AS supplier_name
+             FROM pur_t_purchase_order po
+             LEFT JOIN shared_m_supplier s ON s.supplier_id = po.supplier_id
+             WHERE po.status = 'APPROVED' AND po.deleted_at IS NULL
+             ORDER BY po.supplier_id ASC, po.po_date ASC"
+        );
+        $stmt->execute();
+        $pos = $stmt->fetchAll();
+
+        $result = [];
+        foreach ($pos as $po) {
+            $detStmt = $pdo->prepare(
+                'SELECT pod.material_id, pod.qty_ordered, m.name AS material_name, u.code AS unit_code
+                 FROM pur_t_purchase_order_detail pod
+                 LEFT JOIN wh_m_material m ON m.id = pod.material_id
+                 LEFT JOIN shared_m_unit u ON u.id = m.unit_id
+                 WHERE pod.purchase_order_id = :po'
+            );
+            $detStmt->execute(['po' => $po['id']]);
+
+            $items = array_map(function ($d) {
+                return [
+                    'material_id' => (int) $d['material_id'],
+                    'material_name' => $d['material_name'] ?? '-',
+                    'unit_code' => $d['unit_code'] ?? '-',
+                    'qty_ordered' => (float) $d['qty_ordered'],
+                ];
+            }, $detStmt->fetchAll());
+
+            $result[] = [
+                'po_id' => (int) $po['id'],
+                'po_number' => $po['po_number'],
+                'po_date' => $po['po_date'],
+                'supplier_id' => $po['supplier_id'] !== null ? (int) $po['supplier_id'] : null,
+                'supplier_name' => $po['supplier_name'] ?? '-',
+                'items' => $items,
+            ];
+        }
+
+        return $this->json($response, $result);
+    }
+
+    /**
+     * POST /admin/sj-po/po/{id}/ready
+     * Tandai PO "Siap Kirim" (APPROVED -> READY) -- dilakukan Admin/Pusat
+     * (lihat catatan "[SUSULAN 2026-08-26]" di docblock class), BUKAN lagi
+     * Jakarta. {id} di sini adalah PURCHASE ORDER id, BUKAN SJ id (beda
+     * namespace dari /admin/sj-po/{id} yg mengacu ke pur_t_surat_jalan.id
+     * -- makanya path-nya diprefix '/po/' supaya jelas beda konteksnya).
+     */
+    public function markReady(Request $request, Response $response, array $args): Response
+    {
+        $pdo = Database::connection();
+        $poId = (int) $args['id'];
+
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare('SELECT status FROM pur_t_purchase_order WHERE id = :id AND deleted_at IS NULL FOR UPDATE');
+            $stmt->execute(['id' => $poId]);
+            $status = $stmt->fetchColumn();
+
+            if ($status === false) {
+                throw new \RuntimeException('Purchase Order tidak ditemukan.');
+            }
+            if ($status !== 'APPROVED') {
+                throw new \RuntimeException("Hanya PO berstatus APPROVED yang bisa ditandai Siap Kirim. Status saat ini: {$status}.");
+            }
+
+            $upd = $pdo->prepare("UPDATE pur_t_purchase_order SET status = 'READY', ready_at = :now, ready_by = :uid, updated_at = :now2 WHERE id = :id");
+            $upd->execute([
+                'now' => date('Y-m-d H:i:s'),
+                'uid' => (int) $request->getAttribute('user_id'),
+                'now2' => date('Y-m-d H:i:s'),
+                'id' => $poId,
+            ]);
+
+            $pdo->commit();
+
+            return $this->json($response, ['id' => $poId, 'status' => 'READY']);
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            return $this->error($response, $e->getMessage());
+        }
     }
 
     /**

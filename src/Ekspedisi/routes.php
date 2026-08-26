@@ -125,6 +125,11 @@ return function (App $app): void {
                 // outstanding-po WAJIB sebelum '/admin/sj-po/{id}', pola sama dgn
                 // '/admin/sj/years' vs '/admin/sj/{id}' di atas.
                 $adminGroup->get('/admin/sj-po/outstanding-po', [$poSuratJalan, 'outstandingPo']);
+                // [SUSULAN 2026-08-26] approved-po + po/{id}/ready -- "Siap Kirim"
+                // (APPROVED->READY) dipindah ke sini dari produksi-apk, lihat
+                // catatan "[SUSULAN 2026-08-26]" di docblock PoSuratJalanController.
+                $adminGroup->get('/admin/sj-po/approved-po', [$poSuratJalan, 'approvedPo']);
+                $adminGroup->post('/admin/sj-po/po/{id}/ready', [$poSuratJalan, 'markReady']);
                 $adminGroup->get('/admin/sj-po', [$poSuratJalan, 'index']);
                 $adminGroup->post('/admin/sj-po', [$poSuratJalan, 'store']);
                 $adminGroup->get('/admin/sj-po/{id}', [$poSuratJalan, 'show']);
