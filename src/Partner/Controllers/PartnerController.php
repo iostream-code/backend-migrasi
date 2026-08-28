@@ -38,7 +38,7 @@ class PartnerController extends Controller
                 pt.id_partner_transaksi, pt.id_partner, pt.tgl_deadline, pt.status, pt.status_produksi,
                 pt.status_penerimaan, pt.status_approval, pt.status_bayar, pt.bukti_foto_pembayaran,
                 pt.jumlah, pt.jumlah_diterima, pt.total_harga_produksi, pt.dt_record,
-                pdp.penjualan_id, pdp.penjualan_jenis, p.nama_partner, p.kota,
+                pdp.penjualan_id, pdp.penjualan_jenis, pdp.produk_keterangan_kustom, pdp.gambar, p.nama_partner, p.kota,
                 ph.penjualan_tanggal, pdp.penjualan_detail_performa_id, c.client_nama
              FROM partner_transaksi pt
              JOIN m_partner p ON pt.id_partner = p.id_partner
