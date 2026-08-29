@@ -29,7 +29,6 @@ use App\Ekspedisi\Controllers\ConfigController;
 use App\Ekspedisi\Controllers\DriverController;
 use App\Ekspedisi\Controllers\EkspedisiController;
 use App\Ekspedisi\Controllers\PoSuratJalanController;
-use App\Ekspedisi\Controllers\PoSuratJalanController;
 use App\Ekspedisi\Controllers\SuratJalanController;
 use App\Ekspedisi\Middleware\AdminOnlyMiddleware;
 use App\Ekspedisi\Support\SupirProfile;
@@ -45,11 +44,9 @@ return function (App $app): void {
     $admin = new AdminController();
     $suratJalan = new SuratJalanController();
     $poSuratJalan = new PoSuratJalanController();
-    $poSuratJalan = new PoSuratJalanController();
     $ekspedisi = new EkspedisiController();
     $config = new ConfigController();
 
-    $app->group('/ekspedisi', function ($mod) use ($auth, $driver, $admin, $suratJalan, $poSuratJalan, $ekspedisi, $config) {
     $app->group('/ekspedisi', function ($mod) use ($auth, $driver, $admin, $suratJalan, $poSuratJalan, $ekspedisi, $config) {
         $mod->post('/login', [$auth, 'login']);
         // Publik (di LUAR AuthMiddleware, sama seperti /login) -- app perlu bisa cek
@@ -57,7 +54,6 @@ return function (App $app): void {
         // dicek sesaat app baru dibuka sebelum sempat login).
         $mod->post('/config/check-version', [$config, 'checkVersion']);
 
-        $mod->group('', function ($group) use ($auth, $driver, $admin, $suratJalan, $poSuratJalan, $ekspedisi) {
         $mod->group('', function ($group) use ($auth, $driver, $admin, $suratJalan, $poSuratJalan, $ekspedisi) {
             $group->post('/logout', [$auth, 'logout']);
 
@@ -92,7 +88,6 @@ return function (App $app): void {
             $group->post('/driver/trip/{trip}/complete', [$driver, 'completeTrip']);
 
             // --- Admin / Dispatcher (digerbangi AdminOnlyMiddleware juga) ---
-            $group->group('', function ($adminGroup) use ($admin, $suratJalan, $poSuratJalan, $ekspedisi) {
             $group->group('', function ($adminGroup) use ($admin, $suratJalan, $poSuratJalan, $ekspedisi) {
                 $adminGroup->get('/admin/drivers', [$admin, 'drivers']);
                 $adminGroup->post('/admin/drivers', [$admin, 'createDriver']);
