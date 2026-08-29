@@ -49,6 +49,37 @@ pindah, lihat `src/Ekspedisi/`).
   4. Aturan baru "1 SJ boleh lintas SPK, TAPI cuma kalau semua dari klien yang sama" —
      `PenjualanItemLookup` sekarang bawa `client_id`/`client_nama` per lini (JOIN
      `t_penjualan_header`+`m_client`), divalidasi di `SuratJalanController::store()`.
+
+  **"SJ Tarik" utk Purchase Order (2026-08-29)** — `App\Ekspedisi\Support\PoSuratJalan`/
+  `PoSuratJalanController`, endpoint `/admin/sj-po/*`. Beda TOTAL skema dari SJ "Customer" di
+  atas: modul ini baca/tulis LANGSUNG ke `pur_t_surat_jalan`/`pur_t_surat_jalan_detail`
+  (`sj_direction='IN'`, nomor `SJ-PUR-{NNNNN}` via `cfg_m_doc_number` doc_type `SJ_PUR`) —
+  tabel MILIK modul Purchase `backend-production`, BUKAN `ekspedisi_t_surat_jalan`. Dibangun
+  **belakangan** dari `ekspedisi-apk` (frontend `adminSuratJalanPo.js`/`adminNewSuratJalanPo.js`
+  sudah lebih dulu ada, sempat manggil endpoint yang belum ada sama sekali di sisi ini — modul
+  ini nge-port ulang logika `backend-production`
+  `app/Http/Controllers/API/Purchase/SuratJalanController.php` (store/confirm/
+  outstandingPoDetails/`recalcPoStatus()`) & `PoReadinessController.php` (confirm "Siap Kirim")
+  dari Eloquent jadi raw PDO — **perilakunya SAMA PERSIS** (status lifecycle PO
+  DRAFT→SUBMITTED→APPROVED→READY→SENT→PARTIAL_RECEIVED→RECEIVED→CLOSED, plus
+  REJECTED/CANCELLED; validasi qty `SELECT ... FOR UPDATE` race-safe di `confirm()`), baca 2
+  file itu kalau ada keraguan soal 1 baris query di sini.
+
+  **Beda sengaja dari `PoReadinessController::confirm()` asli:** kartu "PO Menunggu Siap Kirim"
+  `ekspedisi-apk` cuma 1 tombol polos (foto + klik), TIDAK ADA input qty per lini kayak alur
+  Jakarta aslinya — `PoSuratJalan::markReady()` OTOMATIS isi `qty_ready` tiap lini = sisa
+  outstanding-nya (bukan diminta dari body request). Foto (`pur_t_po_readiness.photo_path`
+  NOT NULL di skema) disimpan sbg **URL ABSOLUT** ke `backend-migrasi` sendiri (pola sama dgn
+  foto `migrasi_legacy`/dokumen supir) — beda dari versi asli yang simpan ke disk
+  `backend-production` (`Storage::disk('public_file_foto_purchase')`, tidak bisa diakses dari
+  proses PHP `backend-migrasi`).
+
+  **Diverifikasi (2026-08-29):** endpoint GET (`approvedPo`/`outstandingPo`/`list`) sudah dites
+  langsung ke database produksi (query murni SELECT, tanpa risiko) — hasilnya cocok data asli
+  (mis. PO-00001/XINYAO/"Papan Avocado 24 grosir" muncul benar di `outstanding-po`). Endpoint
+  yang MENULIS (`store`/`confirm`/`markReady`) BELUM pernah dites langsung ke produksi (sengaja
+  — mengubah data PO/SJ sungguhan), diverifikasi lewat `php -l` + review baris-per-baris
+  terhadap kode aslinya saja.
 - **Inventory** (`src/Inventory/`) — migrasi bertahap dari `backend-production`
   (`app/Http/Controllers/API/Inventory/*`, `Route::prefix('inventory')` di `routes/api.php`
   sana). Route-nya **diprefix `/inventory`** (dari awal MEMANG begitu, beda dari Ekspedisi yang
@@ -773,6 +804,78 @@ dianggap final (beda dari `ekspedisi_t_pengajuan_biaya` yang punya `disetujui`/`
 **Belum ada**: UI edit field non-foto (backend `PUT` sudah siap, belum ada form-nya di
 `ekspedisi-apk` — foto bukti lapangan cuma bisa diisi pas create di form "Buat Surat Jalan",
 tombol "Validasi" (foto final) ada di halaman daftar `adminSuratJalan.js`).
+
+**Menutup SPK di `t_penjualan_header` (2026-08-28)** — sebelum ini, `tervalidasi` cuma
+mengubah baris `ekspedisi_t_surat_jalan` sendiri; tidak ada jalur MANAPUN yang menutup balik SPK
+sumbernya di `backend-production` (lihat "SPK ready-kirim" di atas — kriteria "siap kirim" cek
+`status_pengirman = 'belum_selesai'`, tapi tidak pernah ada yang men-set `'selesai'`).
+`SuratJalan::validate()` sekarang sekalian menjalankan `markPenjualanSelesai()`: kumpulkan semua
+`penjualan_id` (SPK) yang disentuh SJ ini — dari `ekspedisi_t_surat_jalan_item` JOIN
+`t_penjualan_detail_performa` (jalur manual/breakdown per item, BOLEH lebih dari 1 SPK sekaligus,
+lihat "Breakdown per lini produk SPK" di atas), digabung fallback kolom `sj.penjualan_id`
+langsung (jalur trip-linked lama, `upsertFromTripPhoto()`, selalu 1 SPK) — lalu `UPDATE
+t_penjualan_header SET status_pengirman = 'selesai', tgl_surat_jalan_selesai = <waktu validasi>
+WHERE penjualan_id IN (...)`. Ditulis langsung ke tabel `backend-production` (bukan lewat API
+terpisah) karena satu database produksi yang sama (lihat "Modul" di atas) — dibungkus 1
+transaction bareng UPDATE `ekspedisi_t_surat_jalan`-nya sendiri supaya tidak pernah kejadian SJ
+tervalidasi tapi SPK-nya gagal ke-update (atau sebaliknya). `tgl_surat_jalan_selesai` dipakai
+`TagihanBroadcastController` (`backend-production`) buat hitung keterlambatan penagihan — kolom
+ini sebelumnya SELALU NULL untuk SJ yang lahir dari app ini.
+
+Tidak menyentuh SPK yang **tidak** pernah tersentuh SJ ini (kalau `markPenjualanSelesai()` tidak
+menemukan `penjualan_id` sama sekali — SJ lepas tanpa SPK, mis. sampel/transfer internal — cuma
+`return` lebih awal, tidak ada UPDATE yang jalan). Tidak ada pengecekan "apakah SEMUA lini produk
+SPK ini sudah terkirim penuh" — begitu SATU SJ yang menyentuh SPK itu divalidasi, SPK langsung
+ditandai selesai (sesuai permintaan eksplisit: keputusan produk, bukan bug, meski secara teori
+1 SPK bisa dipecah ke beberapa SJ terpisah).
+
+**Trip terkait ikut ditutup kalau masih berjalan (2026-08-29)** — `SuratJalan::validate()`
+sekarang juga memanggil `completeLinkedTrip()`, dalam transaction yang sama dgn UPDATE SJ &
+`markPenjualanSelesai()`. Masalah yang ditutup: SJ trip-linked (`trip_id` terisi -- jalur
+checkpoint foto supir INTERNAL, lihat `upsertFromTripPhoto()`) yang divalidasi admin padahal
+supirnya belum/lupa checkpoint foto terakhir (`DriverController::completeTrip()` butuh SEMUA
+langkah `TripPresenter::STEPS` lengkap dulu baru `ekspedisi_t_trip.status` naik ke `completed`)
+bikin trip nyangkut `in_progress` SELAMANYA — dan `AdminController::drivers()` (dipakai peta/list
+Monitoring `ekspedisi-apk`) masih menganggap supirnya "sedang mengirim" lewat kriteria #1 (trip
+`in_progress`) meski SJ-nya sendiri sudah closing. `completeLinkedTrip()`: ambil `trip_id` dari
+baris SJ, kalau ada `UPDATE ekspedisi_t_trip SET status='completed', completed_at=<waktu
+validasi> WHERE id=:trip_id AND status='in_progress'` — klausa `status='in_progress'` di UPDATE
+sendiri (bukan cuma dicek di caller) supaya idempotent & trip yang KEBETULAN sudah `completed`
+duluan (supir sempat checkpoint lengkap sebelum admin sempat validasi SJ-nya) tidak tersentuh,
+`completed_at` aslinya (waktu checkpoint) tidak ketiban waktu validasi SJ. Tidak berlaku utk SJ
+yang `trip_id`-nya NULL (SJ manual admin tanpa trip, atau supir eksternal yang sejak 2026-08-20
+memang tidak pernah dibikinkan trip sama sekali — lihat komentar `AdminController::drivers()`)
+— `completeLinkedTrip()` `return` lebih awal kalau `trip_id` kosong, tidak ada UPDATE yang jalan.
+
+#### Foto "serah terima" manual, khusus supir eksternal (2026-08-29)
+
+Supir eksternal tidak punya akun (tidak bisa login ke app ini sama sekali) dan sejak 2026-08-20
+tidak pernah dibikinkan trip — jadi tidak pernah checkpoint foto apa pun lewat app
+(`ekspedisi_t_trip_photo`: `berangkat`/`serah_terima`/`sj`), beda dari supir internal.
+Ditambahkan kolom baru `ekspedisi_t_surat_jalan.foto_serah_terima` (skema:
+`database/ekspedisi/04_foto_serah_terima_eksternal.sql`, **belum dikonsolidasi ke
+`01_schema.sql` — jalankan manual dulu ke produksi**, lihat catatan di kepala file itu) supaya
+admin bisa OPSIONAL melampirkan bukti serah terima barang atas nama supir eksternal.
+
+`App\Ekspedisi\Support\SuratJalan::attachSerahTerima()` — `UPDATE` 1 kolom doang, **sengaja TIDAK
+mengubah `status` SJ sama sekali** (beda dari `attachPhoto()`/`foto_surat_jalan` yang menaikkan
+status ke `terkirim`) — murni dokumentasi tambahan opsional, tidak pernah jadi bagian mesin status
+`draft`/`terkirim`/`tervalidasi`. Boleh ditimpa berkali-kali (admin salah foto, upload ulang),
+tidak ada guard status seperti `attachPhoto()`.
+
+`SuratJalanController::uploadSerahTerima()` (`POST /admin/sj/{id}/serah-terima`, multipart
+`photo`) — **ditolak 422 kalau `driver_tipe` SJ ini BUKAN `eksternal`** (termasuk kalau
+`driver_id` NULL, tipe-nya jadi tidak diketahui) — supir internal WAJIB tetap checkpoint
+`serah_terima` lewat app sendiri (`DriverController::uploadPhoto()`), tidak boleh dibypass admin
+dari sini (pola sama dgn `completeTripManual()` yang menolak supir internal, lihat "Yang belum
+ada" — konsisten: jalur manual admin di modul ini semuanya khusus eksternal). `driver_tipe`
+sendiri baru ditambahkan ke `SuratJalan::ROW_SELECT`/`find()` (`s.tipe AS driver_tipe`) di
+perubahan ini juga — dipakai jalur ini DAN FE `ekspedisi-apk` (nentuin kapan tombol "Serah Terima"
+tampil di tabel SJ).
+
+**Konsep validasi (`/admin/sj/{id}/validasi`, `SuratJalan::validate()`) TIDAK berubah** — kolom
+`foto_serah_terima` ini murni tambahan opsional sebelum/terlepas dari langkah validasi, admin
+tetap yang menutup alur lewat validasi seperti sebelumnya (lihat "Alur validasi" di atas).
 
 ## Struktur
 

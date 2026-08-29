@@ -28,6 +28,7 @@ use App\Ekspedisi\Controllers\AuthController;
 use App\Ekspedisi\Controllers\ConfigController;
 use App\Ekspedisi\Controllers\DriverController;
 use App\Ekspedisi\Controllers\EkspedisiController;
+use App\Ekspedisi\Controllers\PoSuratJalanController;
 use App\Ekspedisi\Controllers\SuratJalanController;
 use App\Ekspedisi\Middleware\AdminOnlyMiddleware;
 use App\Ekspedisi\Support\SupirProfile;
@@ -42,17 +43,18 @@ return function (App $app): void {
     $driver = new DriverController();
     $admin = new AdminController();
     $suratJalan = new SuratJalanController();
+    $poSuratJalan = new PoSuratJalanController();
     $ekspedisi = new EkspedisiController();
     $config = new ConfigController();
 
-    $app->group('/ekspedisi', function ($mod) use ($auth, $driver, $admin, $suratJalan, $ekspedisi, $config) {
+    $app->group('/ekspedisi', function ($mod) use ($auth, $driver, $admin, $suratJalan, $poSuratJalan, $ekspedisi, $config) {
         $mod->post('/login', [$auth, 'login']);
         // Publik (di LUAR AuthMiddleware, sama seperti /login) -- app perlu bisa cek
         // versi SEBELUM/TANPA tergantung sesi valid (mis. token sudah expired, atau
         // dicek sesaat app baru dibuka sebelum sempat login).
         $mod->post('/config/check-version', [$config, 'checkVersion']);
 
-        $mod->group('', function ($group) use ($auth, $driver, $admin, $suratJalan, $ekspedisi) {
+        $mod->group('', function ($group) use ($auth, $driver, $admin, $suratJalan, $poSuratJalan, $ekspedisi) {
             $group->post('/logout', [$auth, 'logout']);
 
             // Dipertahankan untuk kompatibilitas kontrak lama (driver-apk versi awal
@@ -86,7 +88,7 @@ return function (App $app): void {
             $group->post('/driver/trip/{trip}/complete', [$driver, 'completeTrip']);
 
             // --- Admin / Dispatcher (digerbangi AdminOnlyMiddleware juga) ---
-            $group->group('', function ($adminGroup) use ($admin, $suratJalan, $ekspedisi) {
+            $group->group('', function ($adminGroup) use ($admin, $suratJalan, $poSuratJalan, $ekspedisi) {
                 $adminGroup->get('/admin/drivers', [$admin, 'drivers']);
                 $adminGroup->post('/admin/drivers', [$admin, 'createDriver']);
                 $adminGroup->get('/admin/drivers/{driver}', [$admin, 'driverDetail']);
@@ -116,7 +118,22 @@ return function (App $app): void {
                 $adminGroup->get('/admin/sj/{id}', [$suratJalan, 'show']);
                 $adminGroup->put('/admin/sj/{id}', [$suratJalan, 'update']);
                 $adminGroup->post('/admin/sj/{id}/photo', [$suratJalan, 'uploadPhoto']);
+                $adminGroup->post('/admin/sj/{id}/serah-terima', [$suratJalan, 'uploadSerahTerima']);
                 $adminGroup->post('/admin/sj/{id}/validasi', [$suratJalan, 'validasi']);
+
+                // --- "SJ Tarik" utk Purchase Order (pur_t_surat_jalan, MILIK
+                // modul Purchase backend-production -- lihat docblock
+                // App\Ekspedisi\Support\PoSuratJalan utk alasan lengkap) ---
+                // Rute literal ('approved-po'/'outstanding-po'/'po/{id}/ready')
+                // WAJIB didaftarkan SEBELUM '/admin/sj-po/{id}' -- pola sama
+                // dgn '/admin/sj/years' vs '/admin/sj/{id}' di atas.
+                $adminGroup->get('/admin/sj-po/approved-po', [$poSuratJalan, 'approvedPo']);
+                $adminGroup->post('/admin/sj-po/po/{id}/ready', [$poSuratJalan, 'markReady']);
+                $adminGroup->get('/admin/sj-po/outstanding-po', [$poSuratJalan, 'outstandingPo']);
+                $adminGroup->get('/admin/sj-po', [$poSuratJalan, 'index']);
+                $adminGroup->post('/admin/sj-po', [$poSuratJalan, 'store']);
+                $adminGroup->get('/admin/sj-po/{id}', [$poSuratJalan, 'show']);
+                $adminGroup->post('/admin/sj-po/{id}/confirm', [$poSuratJalan, 'confirm']);
             })->add(new AdminOnlyMiddleware());
         })->add(new AuthMiddleware());
     });

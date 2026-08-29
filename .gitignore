@@ -1,3 +1,4 @@
+/database
 /vendor
 .env
 .env.backup

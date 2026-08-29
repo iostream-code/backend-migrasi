@@ -50,7 +50,10 @@ class SuratJalan
         return self::listWithGaps($pdo, $filters, $page, $perPage);
     }
 
-    private const ROW_SELECT = "SELECT sj.*, COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama_supir, v.nama_lengkap AS nama_validator";
+    // `s.tipe AS driver_tipe` (2026-08-29) -- dipakai FE (ekspedisi-apk)
+    // nentuin kapan tombol "Serah Terima" manual (khusus supir eksternal,
+    // lihat attachSerahTerima()) ditampilkan di tabel/detail SJ.
+    private const ROW_SELECT = "SELECT sj.*, COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama_supir, v.nama_lengkap AS nama_validator, s.tipe AS driver_tipe";
     private const ROW_FROM = 'FROM ekspedisi_t_surat_jalan sj
              LEFT JOIN ekspedisi_m_supir s ON s.id = sj.driver_id
              LEFT JOIN shared_m_users u ON u.user_id = s.user_id
@@ -270,10 +273,10 @@ class SuratJalan
             'id' => null, 'no_surat_jalan' => 'SJ_' . $nomor, 'nomor_urut' => $nomor,
             'trip_id' => null, 'penjualan_id' => null, 'driver_id' => null, 'tujuan' => null,
             'kendaraan' => null, 'plat' => null, 'penerima' => null, 'jumlah_kirim' => null,
-            'tgl_kirim' => null, 'foto_surat_jalan' => null, 'foto_validasi' => null,
+            'tgl_kirim' => null, 'foto_surat_jalan' => null, 'foto_serah_terima' => null, 'foto_validasi' => null,
             'divalidasi_oleh' => null, 'divalidasi_at' => null, 'catatan' => null,
             'status' => null, 'asal' => null, 'created_by' => null, 'created_at' => null,
-            'updated_at' => null, 'nama_supir' => null, 'nama_validator' => null,
+            'updated_at' => null, 'nama_supir' => null, 'nama_validator' => null, 'driver_tipe' => null,
             'items' => [], 'trip_photos' => [], 'client_names' => [],
             'missing' => true,
         ];
@@ -330,7 +333,7 @@ class SuratJalan
     public static function find(PDO $pdo, int $id): ?array
     {
         $stmt = $pdo->prepare(
-            'SELECT sj.*, COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama_supir, v.nama_lengkap AS nama_validator
+            'SELECT sj.*, COALESCE(u.nama_lengkap, s.nama_eksternal) AS nama_supir, v.nama_lengkap AS nama_validator, s.tipe AS driver_tipe
              FROM ekspedisi_t_surat_jalan sj
              LEFT JOIN ekspedisi_m_supir s ON s.id = sj.driver_id
              LEFT JOIN shared_m_users u ON u.user_id = s.user_id
@@ -686,25 +689,143 @@ class SuratJalan
     }
 
     /**
+     * Dipanggil SuratJalanController::uploadSerahTerima() -- admin melampirkan
+     * bukti serah terima barang, KHUSUS SJ supir eksternal (dicek di
+     * controller, bukan di sini). Beda dari attachPhoto()/validate(): kolom
+     * ini ada tuk mengisi kekosongan checkpoint "serah_terima" yang supir
+     * internal dapat otomatis lewat app (ekspedisi_t_trip_photo) tapi supir
+     * eksternal tidak pernah bisa (tidak punya akun) -- murni dokumentasi
+     * TAMBAHAN opsional, sengaja TIDAK mengubah `status` sama sekali (beda
+     * dari attachPhoto() yang menaikkan status ke 'terkirim'). Boleh
+     * ditimpa berkali-kali (mis. admin salah foto), tidak ada guard status
+     * tervalidasi seperti attachPhoto() karena kolom ini tidak pernah jadi
+     * bagian alur draft/terkirim/tervalidasi.
+     */
+    public static function attachSerahTerima(PDO $pdo, int $id, string $photoPath): void
+    {
+        $pdo->prepare(
+            'UPDATE ekspedisi_t_surat_jalan SET foto_serah_terima = :path WHERE id = :id'
+        )->execute(['path' => $photoPath, 'id' => $id]);
+    }
+
+    /**
      * Dipanggil SuratJalanController::validasi() -- ADMIN mengupload foto SJ
      * fisik final (sudah ditandatangani penerima, dibawa balik supir) sekaligus
      * menandai pengiriman ini tervalidasi. Beda dari attachPhoto()/
      * upsertFromTripPhoto() yang isi foto_surat_jalan (bukti lapangan) --
      * ini isi foto_validasi (bukti closing), status jadi 'tervalidasi', dan
      * dicatat siapa & kapan.
+     *
+     * (2026-08-28) Sekalian menutup SPK di sisi backend-production: semua
+     * `t_penjualan_header` yang disentuh SJ ini di-set `status_pengirman` =
+     * 'selesai' + `tgl_surat_jalan_selesai` = waktu validasi (lihat
+     * markPenjualanSelesai()) -- sebelum ini TIDAK ADA jalur manapun yang
+     * mengisi 2 kolom itu utk SJ yang dibuat lewat app ini, padahal dipakai
+     * TagihanBroadcastController (backend-production) buat hitung keterlambatan
+     * penagihan. Dibungkus 1 transaction supaya SJ tervalidasi tapi SPK gagal
+     * ke-update (atau sebaliknya) tidak pernah kejadian setengah-setengah.
+     *
+     * (2026-08-29) Sekalian menutup trip terkait kalau masih `in_progress`
+     * (lihat completeLinkedTrip()) -- SJ trip-linked yang divalidasi admin
+     * padahal supirnya belum sempat/lupa checkpoint foto terakhir sebelumnya
+     * bikin trip nyangkut in_progress SELAMANYA, dan `AdminController::drivers()`
+     * masih menganggap supirnya "sedang mengirim" (kriteria #1: trip
+     * in_progress) meski SJ-nya sendiri sudah closing -- otomatis diselesaikan
+     * di sini supaya monitoring tidak nyangkut. Ikut 1 transaction yang sama.
      */
     public static function validate(PDO $pdo, int $id, string $photoPath, int $userId): void
     {
+        $now = date('Y-m-d H:i:s');
+
+        $pdo->beginTransaction();
+        try {
+            $pdo->prepare(
+                "UPDATE ekspedisi_t_surat_jalan
+                 SET foto_validasi = :path, status = 'tervalidasi', divalidasi_oleh = :user_id, divalidasi_at = :now
+                 WHERE id = :id"
+            )->execute([
+                'path' => $photoPath,
+                'user_id' => $userId,
+                'now' => $now,
+                'id' => $id,
+            ]);
+
+            self::markPenjualanSelesai($pdo, $id, $now);
+            self::completeLinkedTrip($pdo, $id, $now);
+
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+    }
+
+    /**
+     * Dipanggil validate() -- kalau SJ ini trip-linked (`trip_id` terisi,
+     * jalur checkpoint foto supir internal) dan trip-nya masih `in_progress`,
+     * tandai `completed` sekalian. `WHERE status = 'in_progress'` di UPDATE
+     * (bukan cuma di caller) supaya idempotent & aman dari race -- trip yang
+     * sudah `completed` duluan (supir sempat checkpoint lengkap sebelum admin
+     * validasi) tidak tersentuh, `completed_at`-nya TETAP waktu checkpoint asli,
+     * bukan ketiban waktu validasi SJ.
+     */
+    private static function completeLinkedTrip(PDO $pdo, int $id, string $now): void
+    {
+        $stmt = $pdo->prepare('SELECT trip_id FROM ekspedisi_t_surat_jalan WHERE id = :id');
+        $stmt->execute(['id' => $id]);
+        $tripId = $stmt->fetchColumn();
+        if (!$tripId) {
+            return;
+        }
+
         $pdo->prepare(
-            "UPDATE ekspedisi_t_surat_jalan
-             SET foto_validasi = :path, status = 'tervalidasi', divalidasi_oleh = :user_id, divalidasi_at = :now
-             WHERE id = :id"
-        )->execute([
-            'path' => $photoPath,
-            'user_id' => $userId,
-            'now' => date('Y-m-d H:i:s'),
-            'id' => $id,
-        ]);
+            "UPDATE ekspedisi_t_trip SET status = 'completed', completed_at = :now
+             WHERE id = :trip_id AND status = 'in_progress'"
+        )->execute(['now' => $now, 'trip_id' => $tripId]);
+    }
+
+    /**
+     * Dipanggil validate() -- kumpulkan semua penjualan_id (SPK) yang
+     * disentuh SJ ini lalu tandai selesai di t_penjualan_header milik
+     * backend-production (tabel di database produksi YANG SAMA, lihat
+     * README backend-migrasi bagian "Modul" -- bukan lintas koneksi).
+     *
+     * Dua sumber, digabung (1 SJ manual boleh lintas beberapa SPK sekaligus,
+     * lihat catatan store()/PenjualanItemLookup):
+     * - ekspedisi_t_surat_jalan_item JOIN t_penjualan_detail_performa, utk SJ
+     *   dgn breakdown per-item (jalur manual admin, store()/update()).
+     * - kolom sj.penjualan_id langsung, fallback utk SJ trip-linked lama yang
+     *   belum pernah diisi baris item (upsertFromTripPhoto(), selalu 1 SPK).
+     */
+    private static function markPenjualanSelesai(PDO $pdo, int $id, string $now): void
+    {
+        $stmt = $pdo->prepare(
+            "SELECT DISTINCT pdp.penjualan_id
+             FROM ekspedisi_t_surat_jalan_item sji
+             JOIN t_penjualan_detail_performa pdp ON pdp.penjualan_detail_performa_id = sji.penjualan_detail_performa_id
+             WHERE sji.surat_jalan_id = :id"
+        );
+        $stmt->execute(['id' => $id]);
+        $penjualanIds = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+        $direct = $pdo->prepare('SELECT penjualan_id FROM ekspedisi_t_surat_jalan WHERE id = :id');
+        $direct->execute(['id' => $id]);
+        $directId = $direct->fetchColumn();
+        if ($directId) {
+            $penjualanIds[] = $directId;
+        }
+
+        $penjualanIds = array_values(array_unique(array_filter($penjualanIds, fn ($v) => $v !== null && $v !== '')));
+        if (!$penjualanIds) {
+            return;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($penjualanIds), '?'));
+        $params = array_merge([$now], $penjualanIds);
+        $pdo->prepare(
+            "UPDATE t_penjualan_header SET status_pengirman = 'selesai', tgl_surat_jalan_selesai = ?
+             WHERE penjualan_id IN ($placeholders)"
+        )->execute($params);
     }
 
     /**

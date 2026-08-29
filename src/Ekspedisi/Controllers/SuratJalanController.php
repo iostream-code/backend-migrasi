@@ -319,6 +319,39 @@ class SuratJalanController extends Controller
     }
 
     /**
+     * POST /admin/sj/{id}/serah-terima
+     * multipart: photo (file) -- ADMIN melampirkan bukti serah terima barang,
+     * KHUSUS SJ supir EKSTERNAL (ditolak 422 kalau supirnya internal -- supir
+     * internal checkpoint "serah_terima" lewat app sendiri,
+     * DriverController::uploadPhoto(), tidak lewat sini). OPSIONAL & tidak
+     * mengubah `status` SJ sama sekali (lihat App\Ekspedisi\Support\
+     * SuratJalan::attachSerahTerima()) -- beda dari /photo & /validasi yang
+     * dua-duanya bagian mesin status draft/terkirim/tervalidasi.
+     */
+    public function uploadSerahTerima(Request $request, Response $response, array $args): Response
+    {
+        $pdo = Database::connection();
+        $id = (int) $args['id'];
+
+        $sj = SuratJalan::find($pdo, $id);
+        if (!$sj) {
+            return $this->error($response, 'Surat jalan tidak ditemukan.', 404);
+        }
+        if ($sj['driver_tipe'] !== 'eksternal') {
+            return $this->error($response, 'Foto serah terima manual cuma berlaku utk SJ supir eksternal -- supir internal checkpoint sendiri lewat app.', 422);
+        }
+
+        $relativePath = $this->savePhoto($request, $id, 'serah_terima');
+        if ($relativePath === null) {
+            return $this->error($response, 'File photo wajib diunggah, maksimal 8MB.');
+        }
+
+        SuratJalan::attachSerahTerima($pdo, $id, $relativePath);
+
+        return $this->json($response, SuratJalan::find($pdo, $id));
+    }
+
+    /**
      * POST /admin/sj/{id}/validasi
      * multipart: photo (file) -- ADMIN mengupload foto SJ fisik final (sudah
      * ditandatangani penerima, dibawa balik supir) sekaligus menandai
@@ -395,9 +428,10 @@ class SuratJalanController extends Controller
      * -- cuma beda `$kind` (nama file, jadi juga beda field mana yang
      * di-update di ekspedisi_t_surat_jalan) & konversi WEBP (lihat
      * App\Support\PhotoStorage). `$kind`: 'bukti' (foto_surat_jalan, checkpoint
-     * lapangan) atau 'validasi' (foto_validasi, closing bertandatangan) --
-     * disimpan sbg nama file berbeda supaya tidak saling menimpa DAN jelas
-     * perannya cuma dari nama filenya di disk.
+     * lapangan), 'serah_terima' (foto_serah_terima, manual admin khusus supir
+     * eksternal, 2026-08-29) atau 'validasi' (foto_validasi, closing
+     * bertandatangan) -- disimpan sbg nama file berbeda supaya tidak saling
+     * menimpa DAN jelas perannya cuma dari nama filenya di disk.
      * Return path relatif, atau null kalau tidak ada file/melebihi batas ukuran.
      */
     private function savePhoto(Request $request, int $id, string $kind): ?string
