@@ -629,7 +629,7 @@ class StockInController
     }
 
     /**
-     * Folder TERPISAH dari uploadPhoto() di atas (`uploads/stockin-manual/`,
+     * Folder TERPISAH dari uploadPhoto() di atas (`uploads/stockin_manual/`,
      * bukan `uploads/stockin/`) -- `$adjId` (wh_t_stock_adjustment.id) dan
      * `$receiveId` (pur_t_receive_warehouse.id) dua auto-increment BEDA tabel
      * yang independen, keduanya bisa saja kebetulan sama nilainya. Kalau
@@ -639,8 +639,8 @@ class StockInController
      */
     private function uploadManualPhoto(Request $request, int $adjId): ?string
     {
-        $baseDir = __DIR__ . "/../../../public/uploads/stockin-manual/{$adjId}";
-        return PhotoStorage::save($request, 'photo', $baseDir, "uploads/stockin-manual/{$adjId}", 'bukti');
+        $baseDir = __DIR__ . "/../../../public/uploads/stockin_manual/{$adjId}";
+        return PhotoStorage::save($request, 'photo', $baseDir, "uploads/stockin_manual/{$adjId}", 'bukti');
     }
 
     private static function nullableString($v): ?string

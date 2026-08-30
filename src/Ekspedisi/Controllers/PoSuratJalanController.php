@@ -71,25 +71,44 @@ class PoSuratJalanController extends Controller
     }
 
     /**
-     * POST /admin/sj-po
-     * body: { driver_name?, vehicle_number?, notes?, items: [{po_detail_id, qty}, ...] }
+     * POST /admin/sj-po -- BARU (rombak alur Retur/PO 2026-08-30): multipart
+     * (bukan JSON polos lagi) karena sekarang wajib sertakan foto bukti
+     * terima. `items` dikirim sbg field terpisah berisi JSON string (pola
+     * sama dgn StockInController::submitStockInManual() di modul Inventory),
+     * bukan bracket-notation, supaya tetap 1 field array utuh yang gampang
+     * di-decode.
+     *
+     * multipart: photo (file, WAJIB), items (string JSON, wajib),
+     * driver_name?, vehicle_number?, notes?
      */
     public function store(Request $request, Response $response): Response
     {
         $body = (array) $request->getParsedBody();
-        if (empty($body['items']) || !is_array($body['items'])) {
+        $items = json_decode((string) ($body['items'] ?? '[]'), true);
+        if (empty($items) || !is_array($items)) {
             return $this->error($response, 'items wajib diisi minimal 1.');
+        }
+
+        // SJ belum punya id (belum di-insert) -- pakai token unik sbg nama
+        // folder sementara, pola sama dgn folder terpisah per konteks yang
+        // sudah dipakai di tempat lain (mis. stockin_manual/{adjId}).
+        $uploadToken = uniqid('sj', true);
+        $dir = dirname(__DIR__, 3) . "/public/uploads/sj-po-receive/{$uploadToken}";
+        $relativePath = PhotoStorage::save($request, 'photo', $dir, "uploads/sj-po-receive/{$uploadToken}", 'bukti-terima');
+        if ($relativePath === null) {
+            return $this->error($response, 'Foto bukti terima wajib diunggah, maksimal 8MB.');
         }
 
         try {
             $result = PoSuratJalan::create(Database::connection(), [
-                'items' => $body['items'],
+                'items' => $items,
                 'driver_name' => $body['driver_name'] ?? null,
                 'vehicle_number' => $body['vehicle_number'] ?? null,
                 'notes' => $body['notes'] ?? null,
+                'receive_photo_path' => $relativePath,
                 'created_by' => (int) $request->getAttribute('user_id'),
             ]);
-        } catch (\InvalidArgumentException $e) {
+        } catch (\InvalidArgumentException | \RuntimeException $e) {
             return $this->error($response, $e->getMessage());
         }
 

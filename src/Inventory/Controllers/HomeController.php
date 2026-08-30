@@ -365,10 +365,22 @@ class HomeController
     {
         $pdo = Database::connection();
 
+        // BARU (rombak alur Retur/PO 2026-08-30): expose PO paling baru yang
+        // lahir dari PR ini (po_id/po_number/po_status/po_deadline/
+        // po_expected_delivery) -- sebelumnya listPurchaseRequest() cuma
+        // balikin data level-PR, inventory-apk tidak bisa tahu status PO
+        // (READY/SENT/RECEIVED/dst) sama sekali. Korelasi via subquery
+        // (bukan JOIN biasa) krn 1 PR bisa punya BEBERAPA PO (partial
+        // approve) -- ambil yang PALING BARU (id DESC) sbg representasi.
         $stmt = $pdo->query(
             "SELECT pr.id, pr.pr_number, pr.pr_date, pr.status, pr.priority, pr.notes,
                     w.code AS warehouse_code, w.name AS warehouse_name,
-                    u.username AS requester_name
+                    u.username AS requester_name,
+                    (SELECT po.id FROM pur_t_purchase_order po WHERE po.purchase_request_id = pr.id ORDER BY po.id DESC LIMIT 1) AS po_id,
+                    (SELECT po.po_number FROM pur_t_purchase_order po WHERE po.purchase_request_id = pr.id ORDER BY po.id DESC LIMIT 1) AS po_number,
+                    (SELECT po.status FROM pur_t_purchase_order po WHERE po.purchase_request_id = pr.id ORDER BY po.id DESC LIMIT 1) AS po_status,
+                    (SELECT po.deadline FROM pur_t_purchase_order po WHERE po.purchase_request_id = pr.id ORDER BY po.id DESC LIMIT 1) AS po_deadline,
+                    (SELECT po.expected_delivery FROM pur_t_purchase_order po WHERE po.purchase_request_id = pr.id ORDER BY po.id DESC LIMIT 1) AS po_expected_delivery
              FROM pur_t_purchase_request pr
              LEFT JOIN wh_m_warehouse w ON w.id = pr.warehouse_id
              LEFT JOIN shared_m_users u ON u.user_id = pr.requested_by
@@ -392,6 +404,11 @@ class HomeController
                 'warehouse_name' => $pr['warehouse_name'] ?? '-',
                 'requester_name' => $pr['requester_name'] ?? '-',
                 'notes' => $pr['notes'],
+                'po_id' => $pr['po_id'] !== null ? (int) $pr['po_id'] : null,
+                'po_number' => $pr['po_number'],
+                'po_status' => $pr['po_status'],
+                'po_deadline' => $pr['po_deadline'],
+                'po_expected_delivery' => $pr['po_expected_delivery'],
                 'total_items' => count($items),
                 'total_qty_requested' => array_sum(array_column($items, 'qty_requested')),
                 'total_qty_ordered' => array_sum(array_column($items, 'qty_ordered')),

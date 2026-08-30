@@ -25,6 +25,7 @@ use App\Inventory\Controllers\ConfigController;
 use App\Inventory\Controllers\HomeController;
 use App\Inventory\Controllers\MaterialController;
 use App\Inventory\Controllers\OpnameController;
+use App\Inventory\Controllers\ReturPurchaseController;
 use App\Inventory\Controllers\StockInController;
 use App\Inventory\Controllers\StockOutController;
 use App\Middleware\AuthMiddleware;
@@ -84,6 +85,15 @@ return function (App $app): void {
                 $h->post('/get-material-detail', [$home, 'getMaterialDetail']);
                 $h->post('/create-purchase-request', [$home, 'createPurchaseRequest']);
                 $h->post('/list-purchase-request', [$home, 'listPurchaseRequest']);
+            });
+
+            // "Ajukan Retur PO" (2026-08-30, BARU -- rombak alur Retur/PO) --
+            // lihat docblock App\Inventory\Support\ReturPurchase.
+            $returPurchase = new ReturPurchaseController();
+            $authed->group('/purchase-retur', function ($rp) use ($returPurchase) {
+                $rp->get('/eligible-po', [$returPurchase, 'eligiblePo']);
+                $rp->post('/create', [$returPurchase, 'create']);
+                $rp->post('/list', [$returPurchase, 'list']);
             });
 
             $stockIn = new StockInController();

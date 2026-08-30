@@ -275,22 +275,29 @@ class PoSuratJalan
     }
 
     /**
-     * POST /admin/sj-po -- port `store()` (backend-production). `$data`:
-     * `items` (wajib, min 1, `[{po_detail_id, qty}, ...]`), `driver_name`,
-     * `vehicle_number`, `notes`, `created_by`.
+     * POST /admin/sj-po -- BARU (rombak alur Retur/PO 2026-08-30): input SJ
+     * SEKALIGUS jadi bukti terima -- dipanggil admin ekspedisi SETELAH barang
+     * fisik sampai di gudang tujuan (bukan sebelum kirim seperti sebelumnya).
+     * Jadi SJ langsung final ('RECEIVED'/'PARTIAL_RECEIVED', TIDAK PERNAH
+     * 'DRAFT' lagi) dalam SATU langkah -- tidak ada lagi tahap confirm()
+     * terpisah (method itu masih ada di bawah, dibiarkan dorman, harmless).
      *
-     * **1 SJ = 1 PO (MVP, SAMA dgn keputusan FE `adminNewSuratJalanPo.js`)**
-     * -- divalidasi ULANG di sini (bukan cuma percaya FE): semua
-     * `po_detail_id` di `items` harus mengarah ke `purchase_order_id` yang
-     * SAMA, exception kalau tidak.
+     * `$data`: `items` (wajib, min 1, `[{po_detail_id, qty}, ...]` --
+     * `qty` = qty yang BENAR-BENAR diterima), `driver_name`, `vehicle_number`,
+     * `notes`, `receive_photo_path` (wajib, bukti foto barang diterima --
+     * pemanggil/controller yang urus upload filenya), `created_by`.
      *
-     * **TIDAK memvalidasi qty terhadap sisa outstanding di sini** (SAMA
-     * PERSIS dgn `store()` backend-production) -- itu sengaja ditunda sampai
-     * confirm() (dgn `SELECT ... FOR UPDATE`, race-safe), supaya DRAFT boleh
-     * dibuat bebas dulu (mis. 2 SJ draft dari PO yang sama), baru divalidasi
-     * beneran pas salah satunya mau di-confirm jadi SENT.
+     * **1 SJ = 1 PO (MVP)** -- divalidasi ULANG di sini: semua `po_detail_id`
+     * di `items` harus mengarah ke `purchase_order_id` yang SAMA.
      *
-     * @throws \InvalidArgumentException pesan siap ditampilkan ke user
+     * **Qty divalidasi terhadap sisa outstanding DI SINI** (beda dari
+     * sebelumnya yang menunda ke confirm()) -- karena sekarang cuma 1
+     * langkah, validasinya harus tuntas di titik ini, pakai `SELECT ... FOR
+     * UPDATE` (pola sama persis dgn confirm() versi lama) supaya race-safe
+     * kalau 2 admin input SJ dari PO yang sama nyaris bersamaan.
+     *
+     * @throws \InvalidArgumentException pesan siap ditampilkan ke user (validasi input)
+     * @throws \RuntimeException qty melebihi sisa PO (fail-fast di dalam transaction)
      */
     public static function create(PDO $pdo, array $data): array
     {
@@ -298,21 +305,36 @@ class PoSuratJalan
         if (!$items) {
             throw new \InvalidArgumentException('items wajib diisi minimal 1.');
         }
+        if (empty($data['receive_photo_path'])) {
+            throw new \InvalidArgumentException('Foto bukti terima wajib diunggah.');
+        }
+
+        $podIds = [];
+        foreach ($items as $item) {
+            $podId = (int) ($item['po_detail_id'] ?? 0);
+            $qty = (float) ($item['qty'] ?? 0);
+            if ($podId <= 0 || $qty <= 0) {
+                throw new \InvalidArgumentException('po_detail_id dan qty (> 0) wajib diisi tiap item.');
+            }
+            $podIds[] = $podId;
+        }
 
         $pdo->beginTransaction();
         try {
-            $poId = null;
+            // Lock semua lini PO detail yang terlibat -- race-safe thd input
+            // SJ lain dari PO yang sama yang mungkin jalan bersamaan.
+            $placeholders = implode(',', array_fill(0, count($podIds), '?'));
+            $lockStmt = $pdo->prepare("SELECT * FROM pur_t_purchase_order_detail WHERE id IN ($placeholders) FOR UPDATE");
+            $lockStmt->execute($podIds);
             $podRows = [];
-            foreach ($items as $item) {
-                $podId = (int) ($item['po_detail_id'] ?? 0);
-                $qty = (float) ($item['qty'] ?? 0);
-                if ($podId <= 0 || $qty <= 0) {
-                    throw new \InvalidArgumentException('po_detail_id dan qty (> 0) wajib diisi tiap item.');
-                }
+            foreach ($lockStmt->fetchAll() as $row) {
+                $podRows[(int) $row['id']] = $row;
+            }
 
-                $podStmt = $pdo->prepare('SELECT * FROM pur_t_purchase_order_detail WHERE id = :id LIMIT 1');
-                $podStmt->execute(['id' => $podId]);
-                $pod = $podStmt->fetch();
+            $poId = null;
+            foreach ($items as $item) {
+                $podId = (int) $item['po_detail_id'];
+                $pod = $podRows[$podId] ?? null;
                 if (!$pod) {
                     throw new \InvalidArgumentException("PO detail #{$podId} tidak ditemukan.");
                 }
@@ -323,7 +345,15 @@ class PoSuratJalan
                     throw new \InvalidArgumentException('Semua item harus dari PO yang sama (1 SJ = 1 PO).');
                 }
 
-                $podRows[$podId] = $pod;
+                $qty = (float) $item['qty'];
+                $qtyOrdered = (float) $pod['qty_ordered'];
+                $qtyShipped = (float) $pod['qty_shipped'];
+                $qtyShippable = max(0.0, $qtyOrdered - $qtyShipped);
+                if ($qty > $qtyShippable + 0.0001) {
+                    throw new \RuntimeException(
+                        "Qty terima untuk material #{$pod['material_id']} ({$qty}) melebihi sisa PO ({$qtyShippable})."
+                    );
+                }
             }
 
             $poStmt = $pdo->prepare('SELECT * FROM pur_t_purchase_order WHERE id = :id AND deleted_at IS NULL LIMIT 1');
@@ -339,10 +369,10 @@ class PoSuratJalan
             $pdo->prepare(
                 "INSERT INTO pur_t_surat_jalan
                     (sj_number, sj_date, sj_direction, supplier_id, warehouse_id, transporter_name,
-                     vehicle_number, notes, status, created_at, created_by)
+                     vehicle_number, notes, receive_photo_path, status, sent_at, received_at, created_at, created_by)
                  VALUES
                     (:sj_number, :sj_date, 'IN', :supplier_id, :warehouse_id, :transporter_name,
-                     :vehicle_number, :notes, 'DRAFT', :created_at, :created_by)"
+                     :vehicle_number, :notes, :receive_photo_path, 'RECEIVED', :sent_at, :received_at, :created_at, :created_by)"
             )->execute([
                 'sj_number' => $sjNumber,
                 'sj_date' => $now,
@@ -351,6 +381,9 @@ class PoSuratJalan
                 'transporter_name' => $data['driver_name'] ?? null,
                 'vehicle_number' => $data['vehicle_number'] ?? null,
                 'notes' => $data['notes'] ?? null,
+                'receive_photo_path' => $data['receive_photo_path'],
+                'sent_at' => $now,
+                'received_at' => $now,
                 'created_at' => $now,
                 'created_by' => $data['created_by'] ?? null,
             ]);
@@ -360,20 +393,27 @@ class PoSuratJalan
                 'INSERT INTO pur_t_surat_jalan_detail
                     (surat_jalan_id, purchase_order_id, material_id, po_detail_id, unit_id, qty, qty_received)
                  VALUES
-                    (:surat_jalan_id, :purchase_order_id, :material_id, :po_detail_id, :unit_id, :qty, 0)'
+                    (:surat_jalan_id, :purchase_order_id, :material_id, :po_detail_id, :unit_id, :qty, :qty)'
+            );
+            $bumpStmt = $pdo->prepare(
+                'UPDATE pur_t_purchase_order_detail SET qty_shipped = qty_shipped + :qty, qty_received = qty_received + :qty WHERE id = :id'
             );
             foreach ($items as $item) {
                 $podId = (int) $item['po_detail_id'];
                 $pod = $podRows[$podId];
+                $qty = (float) $item['qty'];
                 $detailInsert->execute([
                     'surat_jalan_id' => $sjId,
                     'purchase_order_id' => $poId,
                     'material_id' => $pod['material_id'],
                     'po_detail_id' => $podId,
                     'unit_id' => $pod['unit_id'],
-                    'qty' => (float) $item['qty'],
+                    'qty' => $qty,
                 ]);
+                $bumpStmt->execute(['qty' => $qty, 'id' => $podId]);
             }
+
+            self::recalcPoStatus($pdo, $poId);
 
             $pdo->commit();
         } catch (\Throwable $e) {
@@ -390,10 +430,17 @@ class PoSuratJalan
      * docblock kelas) supaya SJ biasa punya `purchase-finance-apk` tidak
      * ikut nyampur. LIMIT 200 polos tanpa pagination (lihat docblock FE
      * `adminSuratJalanPo.js` -- volume masih jauh dari situ, MVP).
+     *
+     * **`retur_purchase_id IS NULL` (BARU 2026-08-30)** -- sejak
+     * `ReturPoSuratJalan` (sibling class, "Retur PO") ikut memakai SERI
+     * NOMOR `SJ_PUR` yang SAMA (bukan prefix beda), baris SJ retur JUGA
+     * cocok `sj_number LIKE 'SJ-PUR-%'` -- guard ini yang memisahkan
+     * keduanya (baris retur SELALU mengisi `retur_purchase_id`, baris PO
+     * biasa SELALU NULL di situ, lihat create()).
      */
     public static function list(PDO $pdo, array $statuses): array
     {
-        $where = ["sj.deleted_at IS NULL", "sj.sj_direction = 'IN'", "sj.sj_number LIKE 'SJ-PUR-%'"];
+        $where = ["sj.deleted_at IS NULL", "sj.sj_direction = 'IN'", "sj.sj_number LIKE 'SJ-PUR-%'", "sj.retur_purchase_id IS NULL"];
         $params = [];
 
         if ($statuses) {
@@ -430,7 +477,7 @@ class PoSuratJalan
             "SELECT sj.*, COALESCE(s.supplier_nama, s.code, '-') AS supplier_name
              FROM pur_t_surat_jalan sj
              LEFT JOIN shared_m_supplier s ON s.supplier_id = sj.supplier_id
-             WHERE sj.id = :id AND sj.deleted_at IS NULL AND sj.sj_number LIKE 'SJ-PUR-%'
+             WHERE sj.id = :id AND sj.deleted_at IS NULL AND sj.sj_number LIKE 'SJ-PUR-%' AND sj.retur_purchase_id IS NULL
              LIMIT 1"
         );
         $stmt->execute(['id' => $id]);

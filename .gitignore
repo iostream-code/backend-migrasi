@@ -37,8 +37,8 @@
 !/public/uploads/materials/.gitkeep
 /public/uploads/stockin/*
 !/public/uploads/stockin/.gitkeep
-/public/uploads/stockin-manual/*
-!/public/uploads/stockin-manual/.gitkeep
+/public/uploads/stockin_manual/*
+!/public/uploads/stockin_manual/.gitkeep
 /public/uploads/stockout/*
 !/public/uploads/stockout/.gitkeep
 /public/uploads/partner/material/*
@@ -47,5 +47,7 @@
 !/public/uploads/partner/penerimaan/.gitkeep
 /public/uploads/retur/*
 !/public/uploads/retur/.gitkeep
+/public/uploads/sj-po-receive/*
+!/public/uploads/sj-po-receive/.gitkeep
 /public/uploads/terima_retur/*
 !/public/uploads/terima_retur/.gitkeep
