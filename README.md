@@ -509,6 +509,59 @@ persis (field berubah nama tapi bentuknya array polos) supaya dropdown "Perusaha
 yang sudah ada (`adminNewDriver.js`) tidak perlu banyak berubah. **Nonaktifkan (`is_active=0`),
 bukan hapus baris** — riwayat supir/trip yang pernah ditautkan ke perusahaan itu tetap utuh.
 
+**Migrasi data dari `m_expedisi_acc` (2026-08-31, bukan `m_expedisi` — tabel beda, jangan
+tertukar).** `m_expedisi_acc` (backend-production) adalah master vendor ekspedisi milik modul
+**Accounting** (`EkspedisiAccController`, `AccountingController`, `NewAccountingController`,
+`CsController`, `Accounting/{MasterController,ExpedisiController,PembayaranOperasionalController,
+JurnalController}`) — 30 baris data nyata, aktif dipakai utk pembayaran biaya operasional
+ekspedisi, py kolom rekening bank (`no_rekening`/`nama_bank`/`nama_rekening`). Beda dari
+`m_expedisi` (test data doang) yang jadi dasar keputusan "tidak perlu migrasi" di atas.
+
+Keputusan awal (2026-08-31, tahap 1): **migrasi DATA SAJA** (bukan konsolidasi kode) —
+`m_expedisi_acc` TETAP sumber kebenaran utk CRUD Accounting (`NewAccountingController`/
+`AccountingController`), sama sekali tidak direfactor/dihapus. Data disalin sekali ke
+`ekspedisi_m_ekspedisi` via `database/ekspedisi/05_tambah_rekening_bank_dan_migrasi_expedisi_acc.sql`
+(3 kolom rekening bank ditambahkan lebih dulu, tidak ada di skema asli). Idempotent via
+`NOT EXISTS` pencocokan `nama_ekspedisi` — TIDAK ada kolom jejak id sumber terpisah (sempat
+ditambahkan lalu dihapus lagi di sesi yang sama sebelum pernah dijalankan ke produksi, supaya
+skema tetap ramping — lihat header file untuk konsekuensinya kalau `perusahaan_acc` diedit
+belakangan di sumber).
+
+Keputusan lanjutan (2026-08-31, tahap 2): **`finance-apk` (picker ekspedisi di form Surat Jalan
+Purchase, `shipping_pusat.js`) dialihkan bacanya ke `ekspedisi_m_ekspedisi`** —
+`Shared\EkspedisiAccController@index/show` (backend-production) sekarang query
+`ekspedisi_m_ekspedisi` (model baru `App\Models\Shared\EkspedisiMEkspedisi`), bukan lagi
+`m_expedisi_acc`, filter `is_active=1`. Field response berubah nama mengikuti tabel baru
+(`id`/`nama_ekspedisi`, bukan lagi `id_perusahaan_acc`/`perusahaan_acc`) — `shipping_pusat.js`
+disesuaikan mengikuti. **CRUD Accounting TETAP menulis ke `m_expedisi_acc`** (keputusan eksplisit,
+bukan lupa) — konsekuensinya perusahaan ekspedisi baru yang ditambah lewat Accounting TIDAK
+otomatis muncul di picker ini lagi; harus ditambahkan manual juga lewat layar "Kelola Ekspedisi"
+`ekspedisi-apk` (`POST/PUT /admin/ekspedisi`) kalau mau kepakai di form Surat Jalan Purchase.
+Dua tabel akan makin berbeda isinya seiring waktu — diterima sebagai trade-off, bukan bug.
+
+**FK di `pur_t_surat_jalan` (backend-production) — aditif, bukan ganti.** ID dari
+`m_expedisi_acc.id_perusahaan_acc` dan `ekspedisi_m_ekspedisi.id` adalah 2 ruang auto-increment
+berbeda (baris yang sama bisa punya ID beda di tiap tabel) — kolom `id_perusahaan_acc` LAMA di
+`pur_t_surat_jalan` (FK ke `m_expedisi_acc`, sebenarnya sudah tidak pernah terisi oleh
+`SuratJalanController::store()` yang live — lihat catatan bug di kode) dibiarkan apa adanya,
+TIDAK dipakai ulang utk ID dari tabel baru. Kolom baru `id_ekspedisi_m_ekspedisi` (FK asli ke
+`ekspedisi_m_ekspedisi.id`) ditambahkan khusus utk isian dari `finance-apk` yang sudah dialihkan
+ini — lihat `add_id_ekspedisi_m_ekspedisi_to_surat_jalan.sql` di `backend-production/database/migrations/`.
+Tampilan nama ekspedisi di SJ (`transporter_name`) TIDAK terpengaruh sama sekali oleh perubahan
+ini — itu snapshot text yang sudah dikirim langsung oleh frontend saat submit, independen dari
+FK mana pun.
+
+**`ekspedisi-apk` TIDAK perlu diubah** — dropdown "Perusahaan Ekspedisi" di app ini
+(`adminNewDriver.js`, lihat di atas) sudah baca `ekspedisi_m_ekspedisi` lewat `/admin/ekspedisi`
+miliknya sendiri sejak awal (2026-08-20), sebelum migrasi data dari `m_expedisi_acc` ini bahkan
+ada.
+
+**Belum ditangani (di luar scope migrasi data ini):** `Ekspedisi::list()`/`find()` pakai
+`SELECT *` — begitu kolom rekening bank terisi, otomatis ikut ke response
+`GET /admin/ekspedisi` yang dibaca admin/dispatcher app ini (bukan cuma Accounting/finance-apk).
+Kalau data rekening bank sebaiknya tidak terlihat role dispatcher, perlu whitelist kolom
+terpisah — belum dikerjakan, keputusan produk tersendiri.
+
 **`database/migrate_m_expedisi_ke_ekspedisi_m_ekspedisi.php`** (script DATA sekali-jalan,
 OPSIONAL — BUKAN bagian skema 01-03, WAJIB dijalankan SETELAH `01_schema.sql`) — duplikasi baris
 `m_expedisi` (backend-production, TIDAK PERNAH ditulis/diubah script ini) ke
@@ -852,10 +905,17 @@ memang tidak pernah dibikinkan trip sama sekali — lihat komentar `AdminControl
 Supir eksternal tidak punya akun (tidak bisa login ke app ini sama sekali) dan sejak 2026-08-20
 tidak pernah dibikinkan trip — jadi tidak pernah checkpoint foto apa pun lewat app
 (`ekspedisi_t_trip_photo`: `berangkat`/`serah_terima`/`sj`), beda dari supir internal.
-Ditambahkan kolom baru `ekspedisi_t_surat_jalan.foto_serah_terima` (skema:
-`database/ekspedisi/04_foto_serah_terima_eksternal.sql`, **belum dikonsolidasi ke
-`01_schema.sql` — jalankan manual dulu ke produksi**, lihat catatan di kepala file itu) supaya
-admin bisa OPSIONAL melampirkan bukti serah terima barang atas nama supir eksternal.
+Ditambahkan kolom baru `ekspedisi_t_surat_jalan.foto_serah_terima` — definisinya **sudah
+digabung ke `01_schema.sql`** (2026-08-31, KONSOLIDASI KELIMA, lihat kepala file itu) supaya
+fresh install baru dapat kolom ini langsung. File ALTER berdirinya sendiri,
+`database/ekspedisi/04_foto_serah_terima_eksternal.sql`, **sengaja TIDAK ikut dihapus** (beda
+dari pola konsolidasi sebelumnya) — belum ada konfirmasi eksplisit kolom ini sudah benar-benar
+dijalankan ke DB produksi yang SUDAH ADA (existing install butuh `ALTER TABLE`, bukan
+`CREATE TABLE` ulang dari `01_schema.sql`) — jalankan file ini dulu ke produksi kalau belum,
+baru file-nya aman dihapus. Ketahuan juga (2026-08-31) file ini sempat tidak pernah ke-track git
+sama sekali gara-gara bug `.gitignore` (`/database` blanket-ignore folder ini, sudah diperbaiki
+— lihat riwayat `.gitignore`) — kalau instalasi lain sempat clone repo ini sebelum baris ignore
+itu dihapus, file ALTER-nya tidak akan ada di working copy mereka.
 
 `App\Ekspedisi\Support\SuratJalan::attachSerahTerima()` — `UPDATE` 1 kolom doang, **sengaja TIDAK
 mengubah `status` SJ sama sekali** (beda dari `attachPhoto()`/`foto_surat_jalan` yang menaikkan
@@ -893,8 +953,9 @@ backend-migrasi/
 │   │   │                              # migration, lihat header file
 │   │   ├── 02_seed_admin_access.sql  # seed whitelist admin/dispatcher (cari by username, idempotent)
 │   │   ├── 03_seed_dummy_drivers.sql # pre-provision profil supir INTERNAL dummy (cari by username, idempotent)
-│   │   ├── migrate_legacy_surat_jalan.php # script DATA sekali-jalan (BUKAN skema) -- migrasi surat_jalan lama, lihat bagian di atas
-│   │   └── migrate_m_expedisi_ke_ekspedisi_m_ekspedisi.php # script DATA sekali-jalan, OPSIONAL -- duplikasi m_expedisi, lihat bagian "Master perusahaan ekspedisi eksternal"
+│   │   ├── 04_foto_serah_terima_eksternal.sql # ALTER kolom foto serah terima -- SUDAH digabung ke 01_schema.sql, file ALTER-nya sendiri dipertahankan sampai dikonfirmasi jalan di produksi existing
+│   │   ├── 05_tambah_rekening_bank_dan_migrasi_expedisi_acc.sql # ALTER +3 kolom rekening bank +INSERT sekali-jalan idempotent dari m_expedisi_acc (Accounting, backend-production) -- lihat "Migrasi data dari m_expedisi_acc"
+│   │   └── migrate_legacy_surat_jalan.php # script DATA sekali-jalan (BUKAN skema) -- migrasi surat_jalan lama, lihat bagian di atas
 │   └── inventory/                # BELUM ADA -- tabel modul Inventory sudah live di
 │                                  # backend-production, migrasi ini soal kode dulu, bukan skema.
 │                                  # Folder ini dibuat kalau porting nanti butuh skema baru/beda.

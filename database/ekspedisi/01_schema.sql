@@ -1,5 +1,16 @@
 -- ekspedisi-apk-backend -- skema tabel domain ekspedisi (langkah 1 dari database/).
 --
+-- KONSOLIDASI KELIMA (2026-08-31): kolom `foto_serah_terima` di
+-- `ekspedisi_t_surat_jalan` (bukti serah terima manual admin utk SJ supir
+-- eksternal) digabung ke sini supaya FRESH INSTALL baru dapat kolom ini
+-- langsung. BEDA dari konsolidasi sebelumnya: file sumbernya,
+-- `04_foto_serah_terima_eksternal.sql`, SENGAJA BELUM DIHAPUS dari
+-- `database/ekspedisi/` -- belum ada konfirmasi eksplisit ALTER-nya sudah
+-- dijalankan ke DB produksi yang SUDAH ADA (existing install butuh ALTER
+-- TABLE manual, beda dari fresh install yang cukup CREATE TABLE dari file
+-- ini). Jalankan `04_foto_serah_terima_eksternal.sql` dulu ke produksi kalau
+-- belum (lihat catatan di kepala file itu), baru file itu aman dihapus &
+-- entri ini disunting jadi "sudah dijalankan".
 -- KONSOLIDASI KEEMPAT (2026-08-23): file 04_nomor_sj_manual.sql (kolom
 -- `nomor_urut` + unique index di `ekspedisi_t_surat_jalan`, utk nomor SJ
 -- manual -- lihat README.md bagian "Penyederhanaan 2026-08-23") digabung ke
@@ -22,9 +33,9 @@
 -- `database/`, cuma snapshot akhirnya yang dipertahankan di sini.
 --
 -- BUKAN migration Laravel/framework apa pun -- jalankan manual sekali, urut:
---   mysql -u <user> -p <database_produksi> < database/01_schema.sql
---   mysql -u <user> -p <database_produksi> < database/02_seed_admin_access.sql
---   mysql -u <user> -p <database_produksi> < database/03_seed_dummy_drivers.sql   # opsional
+--   mysql -u <user> -p <database_produksi> < database/ekspedisi/01_schema.sql
+--   mysql -u <user> -p <database_produksi> < database/ekspedisi/02_seed_admin_access.sql
+--   mysql -u <user> -p <database_produksi> < database/ekspedisi/03_seed_dummy_drivers.sql   # opsional
 --
 -- Kalau nanti ada perubahan skema baru: tambah file baru bernomor berikutnya
 -- (mis. 04_...sql), JANGAN edit file yang sudah pernah dijalankan di produksi.
@@ -223,6 +234,7 @@ CREATE TABLE `ekspedisi_t_surat_jalan` (
   `jumlah_kirim` int DEFAULT NULL COMMENT 'Kalau ada items (lihat ekspedisi_t_surat_jalan_item), dihitung otomatis dari total semua item',
   `tgl_kirim` date DEFAULT NULL COMMENT 'Tanggal kirim -- bisa beda dari created_at (waktu record dibuat)',
   `foto_surat_jalan` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Path relatif (native) atau URL absolut ke indokoper.com (migrasi_legacy) -- pola sama seperti ekspedisi_t_trip_photo',
+  `foto_serah_terima` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Bukti serah terima barang, diupload MANUAL oleh admin -- opsional, khusus SJ supir eksternal (tidak py checkpoint app sama sekali). Beda dari ekspedisi_t_trip_photo.serah_terima (checkpoint ASLI supir internal lewat app). Tidak mempengaruhi status SJ.',
   `foto_validasi` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL COMMENT 'Foto SJ fisik final yang sudah ditandatangani penerima -- diupload admin, TERPISAH dari foto_surat_jalan (bukti checkpoint lapangan)',
   `divalidasi_oleh` int DEFAULT NULL COMMENT 'FK ke shared_m_users.user_id -- admin yang melakukan validasi',
   `divalidasi_at` datetime DEFAULT NULL,

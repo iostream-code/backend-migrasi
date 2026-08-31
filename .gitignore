@@ -1,4 +1,13 @@
-/database
+# Baris `/database` boilerplate awal scaffold Slim (907d0a1) DIHAPUS
+# (2026-08-31) -- tidak pernah ada file lokal/sensitif di `database/` di repo
+# ini, folder itu isinya skrip SQL modul Ekspedisi yang MEMANG dimaksudkan
+# version-controlled (lihat database/ekspedisi/01_schema.sql). Git tidak
+# bisa re-include file di dalam direktori yang sudah di-exclude (limitasi
+# gitignore, negasi `!database/ekspedisi/*` TIDAK berfungsi) -- makanya
+# baris ignore-nya dihapus total, bukan dinegasikan. Efeknya: 2 file yang
+# sempat gagal ke-track (04_foto_serah_terima_eksternal.sql,
+# 05_tambah_rekening_bank_dan_migrasi_expedisi_acc.sql) sekarang normal
+# ke-add seperti file lain.
 /vendor
 .env
 .env.backup
